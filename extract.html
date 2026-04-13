@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GBMem-Menu 256M Extractor</title>
+
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body id="extractor">
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <h1>GBMem-Menu 256M Extractor</h1>
+    <div class="badge">Version 1.0</div>
+    <p>Extracts individual game ROMs and save files from a GBMem-Menu 256M compilation backup</p>
+  </header>
+
+  <!-- Drop Zone -->
+  <div class="dropzone" id="dropzone" aria-label="Drop files here or press Enter to browse files">
+    <div class="dropzone-icon">📂</div>
+    <h3>Drop files here or click to browse</h3>
+    <p>Compilation ROM (.gbc) &middot; Combined save data (.sav, optional)</p>
+    <input type="file" id="fileInput" multiple accept=".gb,.gbc,.sav" aria-label="Select compilation ROM and optional save file">
+  </div>
+
+  <!-- File status -->
+  <div class="columns">
+    <div class="columns-left">
+      <div class="column" id="colRom">
+        <div class="column-header"><h4>💾 Compilation ROM</h4></div>
+        <div id="romList"><div class="column-empty">Upload a 32 MiB compilation ROM (.gbc)</div></div>
+      </div>
+    </div>
+    <div class="column" id="colSav">
+      <div class="column-header"><h4>📦 Combined Save Data (optional)</h4></div>
+      <div id="savList"><div class="column-empty">No save data added</div></div>
+    </div>
+  </div>
+
+  <!-- Game list table -->
+  <div class="section" id="gameListSection" style="display:none">
+    <div class="section-title">Detected Games</div>
+    <div id="gameTableBody" style="overflow-x:auto"></div>
+  </div>
+
+  <!-- Extract button & progress -->
+  <div class="build-section" id="buildSection">
+    <button type="button" class="build-btn" id="extractBtn" onclick="startExtract()" disabled>
+      <span>📤</span> Extract &amp; Download ZIP
+    </button>
+    <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+  </div>
+
+  <!-- Log -->
+  <div class="log" id="buildLog" aria-live="polite"></div>
+
+  <!-- Footer -->
+  <footer>
+    <b>GBMem-Menu 256M Extractor</b> &middot; <a href="builder.html">GBMem-Menu 256M Builder</a>
+    <br><br>
+    Disclaimer: Developed with assistance from GitHub Copilot.
+    <br>
+    This tool makes use of the <a href="https://fusion-pixel-font.takwolf.com/" target="_blank" rel="noopener">Fusion Pixel Font</a>.
+  </footer>
+
+</div>
+
+<!-- Application Logic -->
+<script src="app.js"></script>
+</body>
+</html>

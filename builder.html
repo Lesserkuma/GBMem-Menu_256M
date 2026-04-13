@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GBMem-Menu 256M Builder</title>
+
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Embedded resources (base64) -->
+  <script src="res/menu_bps_b64.js"></script>
+  <script src="res/bg_defaults_b64.js"></script>
+</head>
+<body id="builder">
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <h1>GBMem-Menu 256M Builder</h1>
+    <div class="badge">Version 1.0</div>
+    <p>This tool builds a custom compilation of games for supported cartridges by modifying a user-provided <i>NP GB-Memory Cartridge</i> Menu ROM.</p>
+    <p>Supported cartridges are known as 256M Multi Game Cartridges and are available on marketplaces under generic names such as “108 in 1”.</p>
+    <!-- Hidden spans to trigger font loading -->
+    <span style="font-family:'GBMEM';font-size:8px;position:absolute;left:-9999px;opacity:0">X</span>
+    <span style="font-family:'FusionPixel12px';font-size:12px;position:absolute;left:-9999px;opacity:0">X</span>
+  </header>
+
+  <!-- Drop Zone -->
+  <div class="dropzone" id="dropzone" aria-label="Drop files here or press Enter to browse files">
+    <div class="dropzone-icon">📂</div>
+    <h3>Drop files here or click to browse</h3>
+    <p><span>ROM files</span> <span>(.gb, .sgb, .gbc)</span> &middot; <span>Save Data files</span> <span>(.sav)</span> &middot; <span>Background images</span> <span>(.png)</span> &middot; <span>Newsticker image</span> <span>(.png)</span></p>
+    <input type="file" id="fileInput" multiple accept=".gb,.sgb,.gbc,.sav,.png" aria-label="Select ROM, save and image files">
+  </div>
+
+  <!-- File Columns -->
+  <div class="columns">
+    <div class="columns-left">
+      <div class="column" id="colMenu">
+        <div class="column-header"><h4>📜 Menu ROM</h4></div>
+        <div id="menuList"><div class="column-empty"><b>Required:</b> Upload an original &ldquo;NP GB-Memory Cartridge&rdquo; menu ROM</div></div>
+      </div>
+      <div class="column" id="colBg">
+        <div class="column-header"><h4>🎨 Backgrounds</h4></div>
+        <div id="bgList"><div class="column-empty">Optional: Upload background images (PNG format, 160×144px)<br>or use the default backgrounds</div></div>
+      </div>
+      <div class="column" id="colNews">
+        <div class="column-header"><h4>📰 Newsticker</h4></div>
+        <div id="newsList"><div class="column-empty">Optional: Upload a newsticker image (PNG format, black &amp; white, max 14px tall)<br>or use the newsticker input box below</div></div>
+      </div>
+    </div>
+    <div class="column" id="colGames">
+      <div class="column-header"><h4>🎮 Game ROMs</h4><span class="column-count" id="gamesCount">0</span></div>
+      <div id="gamesList" style="max-height:320px;overflow-y:auto"><div class="column-empty">Upload game ROMs for your compilation (GB, SGB, GBC format)</div></div>
+    </div>
+  </div>
+
+  <!-- Game Selection Table -->
+  <div class="section" id="gameSelectionSection" style="display:none">
+    <div class="section-title">Game Selection</div>
+    <div id="gameSelectionBody" style="overflow-x:auto"></div>
+  </div>
+
+  <!-- Flash Usage -->
+  <div class="section" id="flashUsageSection" style="display:none">
+    <div class="section-title">Flash Usage</div>
+    <div id="flashUsage"></div>
+  </div>
+
+  <!-- Newsticker Section -->
+  <div class="section" id="tickerSection">
+    <div class="section-title">Newsticker Settings</div>
+    <div class="ticker-toggle">
+      <button type="button" class="active" id="tickerTextBtn" onclick="setTickerMode('text')">Text</button>
+      <button type="button" id="tickerImageBtn" onclick="setTickerMode('image')">Uploaded Image</button>
+    </div>
+    <input class="ticker-input" id="tickerText" type="text" placeholder="Enter ticker text...">
+    <div id="tickerImageHint" style="display:none;font-size:.75rem;color:var(--text3);margin-top:.5rem">
+      Upload a greyscale PNG image (max 14px tall, up to 4080px wide) via the drop zone above.
+    </div>
+  </div>
+
+  <!-- Menu Settings -->
+  <div class="section" id="bgSection">
+    <div class="section-title">Menu Settings</div>
+    <div class="bg-previews">
+      <div class="bg-preview-card">
+        <label>Game Boy Color Background</label>
+        <select class="bg-slot-select" id="bgCgbSelect" onchange="assignBgSlot('cgb',this.value)">
+          <option value="">Default Image</option>
+        </select>
+        <div class="canvas-wrap">
+          <canvas id="bgCgbCanvas" width="160" height="144"></canvas>
+          <div class="sample-overlay" id="cgbSampleOverlay">
+            <span id="cgbSampleLine1" class="sample-bar" style="color:#000000;background-color:#ffffff">Sample Text</span>
+            <span id="cgbSampleLine2" style="color:#ffffff">Sample Text<br>Sample Text</span>
+          </div>
+        </div>
+        <div class="cgb-mode-toggle" id="cgbModeToggle" style="display:none">
+          <button type="button" class="active" id="cgbModeAsisBtn" onclick="setCgbRenderMode('asis')">Render as-is</button>
+          <button type="button" id="cgbModeGrayBtn" onclick="setCgbRenderMode('grayscale')">Colorized Grayscale</button>
+        </div>
+        <div class="cgb-color-controls" id="cgbColorControls" style="display:none">
+          <label>Primary Colors <input type="color" id="cgbColor0" value="#ffffff" oninput="onCgbColorChange()"> <input type="color" id="cgbColor3" value="#000000" oninput="onCgbColorChange()"></label>
+        </div>
+        <label class="invert-label" id="cgbInvertLabel" style="display:none"><input type="checkbox" id="cgbInvert" onchange="onCgbInvertChange()"> Invert Primary Colors</label>
+        <div class="cgb-threshold-controls" id="cgbThresholdControls" style="display:none">
+          <label>Dark <input type="range" id="cgbThresholdLow" min="1" max="254" value="64" oninput="onCgbThresholdChange()"> <span id="cgbThresholdLowVal">64</span></label>
+          <label>Light <input type="range" id="cgbThresholdHigh" min="1" max="254" value="192" oninput="onCgbThresholdChange()"> <span id="cgbThresholdHighVal">192</span></label>
+        </div>
+        <div class="cgb-secondary-controls" id="cgbSecondaryControls" style="display:none">
+          <label>Secondary Colors <input type="color" id="cgbSecondary1" value="#aaaaaa" oninput="onCgbSecondaryChange()"> <input type="color" id="cgbSecondary2" value="#555555" oninput="onCgbSecondaryChange()"></label>
+        </div>
+        <div class="bg-warnings" id="bgCgbWarnings"></div>
+      </div>
+      <div class="bg-preview-card">
+        <label>Game Boy Background</label>
+        <select class="bg-slot-select" id="bgDmgSelect" onchange="assignBgSlot('dmg',this.value)">
+          <option value="">Default Image</option>
+        </select>
+        <div class="canvas-wrap">
+          <canvas id="bgDmgCanvas" width="160" height="144"></canvas>
+          <div class="sample-overlay" id="dmgSampleOverlay">
+            <span id="dmgSampleLine1" class="sample-bar" style="color:#000000;background-color:#ffffff">Sample Text</span>
+            <span id="dmgSampleLine2" style="color:#ffffff">Sample Text<br>Sample Text</span>
+          </div>
+        </div>
+        <label class="invert-label" id="dmgInvertLabel" style="display:none"><input type="checkbox" id="dmgInvert" onchange="onDmgInvertChange()"> Invert Primary Colors</label>
+        <div class="dmg-threshold-controls" id="dmgThresholdControls" style="display:none">
+          <label>Dark <input type="range" id="dmgThresholdLow" min="1" max="254" value="64" oninput="onDmgThresholdChange()"> <span id="dmgThresholdLowVal">64</span></label>
+          <label>Light <input type="range" id="dmgThresholdHigh" min="1" max="254" value="192" oninput="onDmgThresholdChange()"> <span id="dmgThresholdHighVal">192</span></label>
+        </div>
+        <div class="bg-warnings" id="bgDmgWarnings"></div>
+      </div>
+    </div>
+    <div class="menu-options">
+      <label><input type="checkbox" id="enableMusic" checked onchange="onEnableMusicChange()"> Enable Background Music</label>
+    </div>
+  </div>
+
+  <!-- Build Button & Progress -->
+  <div class="build-section" id="buildSection">
+    <button type="button" class="build-btn" id="buildBtn" onclick="startBuild()" disabled>
+      <span>⚡</span> Build ROM
+    </button>
+    <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+  </div>
+
+  <!-- Build Log -->
+  <div class="log-wrap" id="logWrap">
+    <button type="button" class="log-copy-btn" id="logCopyBtn" onclick="copyLogToClipboard()" title="Copy to Clipboard">📋</button>
+    <div class="log" id="buildLog" aria-live="polite"></div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <b>GBMem-Menu 256M Builder</b> &middot; <a href="extract.html">GBMem-Menu 256M Extractor</a>
+    <br><br>
+    Disclaimer: Developed with assistance from GitHub Copilot.
+    <br>
+    This tool makes use of the <a href="https://fusion-pixel-font.takwolf.com/" target="_blank" rel="noopener">Fusion Pixel Font</a>.
+  </footer>
+
+</div>
+
+<!-- Application Logic -->
+<script src="app.js"></script>
+</body>
+</html>
