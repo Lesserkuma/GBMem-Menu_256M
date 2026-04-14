@@ -25,8 +25,8 @@ const SRAM_BLOCK      = 0x200000;        // Every 2 MiB block is one SRAM slot
 const SRAM_SLOT_SIZE  = 0x8000;          // 32 KiB (one hardware SRAM page)
 const SRAM_NUM_SLOTS  = 16;
 const SRAM_TOTAL_SIZE = SRAM_SLOT_SIZE * SRAM_NUM_SLOTS;
-const SRAM_EVEN_SLOTS = [0, 1, 2, 3, 8, 9, 10, 11];
-const SRAM_ODD_SLOTS  = [4, 5, 6, 7, 12, 13, 14, 15];
+const SRAM_EVEN_SLOTS = [0, 1, 2, 3, 8, 9, 10, 11]; // SRAM slots on even flash banks
+const SRAM_ODD_SLOTS  = [4, 5, 6, 7, 12, 13, 14, 15]; // SRAM slots on odd flash banks
 const SRAM_EVEN_SET   = new Set(SRAM_EVEN_SLOTS);
 
 /* Mapper type bytes -------------------------------------------- */
@@ -1066,16 +1066,25 @@ function computePlacements(entries) {
     }
 
     /* --- Non-SRAM placement --- */
-    let pos = MENU_SIZE;
-    const rem = pos % g.size;
-    if (rem) pos += g.size - rem;
-    while (pos + g.size <= FLASH_SIZE) {
-      if (regionFree(pos, g.size)) {
-        markRegion(pos, g.size);
-        g.offset = pos;
-        return true;
+    /* MBC1 games prefer odd SRAM-slot regions to avoid glitches */
+    const isMbc1NoSram = MBC1_TYPES.has(g.cartType);
+    const scanRegions  = isMbc1NoSram
+      ? [...SRAM_ODD_SLOTS.map(s => [s * SRAM_BLOCK, (s + 1) * SRAM_BLOCK]),
+         ...Array.from({ length: SRAM_NUM_SLOTS }, (_, s) => [s * SRAM_BLOCK, (s + 1) * SRAM_BLOCK])]
+      : [[MENU_SIZE, FLASH_SIZE]];
+
+    for (const [regionStart, regionEnd] of scanRegions) {
+      let pos = Math.max(regionStart, MENU_SIZE);
+      const rem = pos % g.size;
+      if (rem) pos += g.size - rem;
+      while (pos + g.size <= regionEnd && pos + g.size <= FLASH_SIZE) {
+        if (regionFree(pos, g.size)) {
+          markRegion(pos, g.size);
+          g.offset = pos;
+          return true;
+        }
+        pos += g.size;
       }
-      pos += g.size;
     }
     g.skipReason = 'ROM total space full';
     return false;
@@ -2172,6 +2181,12 @@ function updateGameTableBuilder() {
     let sramHtml;
     if (!hasSram) {
       sramHtml = '<span style="color:var(--text3);font-size:.7rem">\u2014</span>';
+      /* MBC1 without SRAM: warn if placed in an even SRAM-slot region */
+      if (isMbc1 && p.offset !== null && p.offset !== undefined) {
+        const romSlot = Math.floor(p.offset / SRAM_BLOCK);
+        if (SRAM_EVEN_SET.has(romSlot))
+          sramHtml += '<span class="sram-warn" title="Not all MBC1 games function properly on this SRAM Slot">\u26a0\ufe0f</span>';
+      }
     } else {
       const autoSlot = p.sramSlot;
       const isAuto   = g.forceSramSlot === null && !g.forceNoSram;
@@ -2670,13 +2685,13 @@ function updateBgPreviews() {
     const msgs = [];
     if (!isGray && state.bgCgb?.colorsReduced) msgs.push('\u26a0\ufe0f More than 2 non-BW colors per 8\u00d78 pixel tile may cause artifacts');
     const tilesMerged = isGray ? cgbResult?.tilesReduced : state.bgCgb?.tilesReduced;
-    if (tilesMerged)  msgs.push(`\u26a0\ufe0f Too many 8\u00d78 pixel tiles may cause artifacts`);
+    if (tilesMerged)  msgs.push(`\u26a0\ufe0f Too many unique 8\u00d78 pixel tiles may cause artifacts`);
     cgbWarn.innerHTML = msgs.map(m => `<div>${m}</div>`).join('');
   }
   const dmgWarn = document.getElementById('bgDmgWarnings');
   if (dmgWarn) {
     dmgWarn.textContent = state.bgDmg?.tilesReduced
-      ? `\u26a0\ufe0f Too many 8\u00d78 pixel tiles may cause artifacts`
+      ? `\u26a0\ufe0f Too many unique 8\u00d78 pixel tiles may cause artifacts`
       : '';
   }
 
@@ -3076,7 +3091,9 @@ async function startBuild() {
         if (isPlaced) {
           summaryOrd++;
           const sramSlot = p.sramSlot != null ? `SRAM#${p.sramSlot+1}` : '';
-          log('ok', `  ${String(summaryOrd).padStart(2)}: ${g.title}  [${formatSize(g.rom.size)}, ${mapperName(g.rom.cartType)}, ${g.platform}, SRAM:${sram}]  @ ${formatHexOffset(p.offset)} ${sramSlot}`);
+          const mbc1EvenWarn = (!g.rom.sramSize && MBC1_TYPES.has(g.rom.cartType)
+            && SRAM_EVEN_SET.has(Math.floor(p.offset / SRAM_BLOCK))) ? ' ⚠ even slot' : '';
+          log('ok', `  ${String(summaryOrd).padStart(2)}: ${g.title}  [${formatSize(g.rom.size)}, ${mapperName(g.rom.cartType)}, ${g.platform}, SRAM:${sram}]  @ ${formatHexOffset(p.offset)} ${sramSlot}${mbc1EvenWarn}`);
         } else {
           const reason = (p && p.skip) || 'no space';
           log('warn', `   -: ${g.title}  [${formatSize(g.rom.size)}, ${mapperName(g.rom.cartType)}, ${g.platform}, SRAM:${sram}]  – ${reason}`);
