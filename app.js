@@ -25,9 +25,6 @@ const SRAM_BLOCK      = 0x200000;        // Every 2 MiB block is one SRAM slot
 const SRAM_SLOT_SIZE  = 0x8000;          // 32 KiB (one hardware SRAM page)
 const SRAM_NUM_SLOTS  = 16;
 const SRAM_TOTAL_SIZE = SRAM_SLOT_SIZE * SRAM_NUM_SLOTS;
-const SRAM_EVEN_SLOTS = [0, 1, 2, 3, 8, 9, 10, 11]; // SRAM slots on even flash banks
-const SRAM_ODD_SLOTS  = [4, 5, 6, 7, 12, 13, 14, 15]; // SRAM slots on odd flash banks
-const SRAM_EVEN_SET   = new Set(SRAM_EVEN_SLOTS);
 
 /* Mapper type bytes -------------------------------------------- */
 const MBC1_TYPES      = new Set([0x01, 0x02, 0x03]);
@@ -893,6 +890,18 @@ async function renderTitleImage(title) {
 
 /* --- ROM Utilities --- */
 
+/** Read the ROM title from the cartridge header. */
+function readCartTitle(data) {
+  if (!data || data.length < 0x144) return '';
+  let out = '';
+  for (let i = 0x134; i < 0x144; i++) {
+    const b = data[i];
+    if (!b) break;
+    out += String.fromCharCode(b);
+  }
+  return out.replace(/\s+$/, '');
+}
+
 /** Detect the target platform from the ROM header bytes. */
 function detectPlatform(data) {
   if (data.length < 0x150) return 'DMG';
@@ -908,6 +917,15 @@ function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
 
 /** Human-readable mapper name from the cartridge-type byte. */
 function mapperName(ct) { return MAPPER_NAMES[ct] || 'Unknown'; }
+
+/** Mapper label for builder UI/logs; patched games show original mapper as MBCx→5. */
+function gameMapperLabel(game) {
+  if (game?.mapperPatch) {
+    const original = mapperName(game.originalCartType ?? game?.rom?.cartType);
+    return `${original}→5`;
+  }
+  return mapperName(game?.rom?.cartType);
+}
 
 /**
  * Compute 256M register flags for a given mapper/SRAM combination.
@@ -1036,8 +1054,7 @@ function computePlacements(entries) {
 
     /* --- Auto SRAM placement --- */
     if (hasSram) {
-      const isMbc1    = MBC1_TYPES.has(g.cartType);
-      const slotOrder = isMbc1 ? [...SRAM_ODD_SLOTS, ...SRAM_EVEN_SLOTS] : [...Array(16).keys()];
+      const slotOrder = [...Array(SRAM_NUM_SLOTS).keys()];
       for (const slot of slotOrder) {
         if (sramUsed.has(slot)) continue;
         const blk = slot * SRAM_BLOCK;
@@ -1065,13 +1082,8 @@ function computePlacements(entries) {
       return false;
     }
 
-    /* --- Non-SRAM placement --- */
-    /* MBC1 games prefer odd SRAM-slot regions to avoid glitches */
-    const isMbc1NoSram = MBC1_TYPES.has(g.cartType);
-    const scanRegions  = isMbc1NoSram
-      ? [...SRAM_ODD_SLOTS.map(s => [s * SRAM_BLOCK, (s + 1) * SRAM_BLOCK]),
-         ...Array.from({ length: SRAM_NUM_SLOTS }, (_, s) => [s * SRAM_BLOCK, (s + 1) * SRAM_BLOCK])]
-      : [[MENU_SIZE, FLASH_SIZE]];
+     /* --- Non-SRAM placement --- */
+     const scanRegions = [[MENU_SIZE, FLASH_SIZE]];
 
     for (const [regionStart, regionEnd] of scanRegions) {
       let pos = Math.max(regionStart, MENU_SIZE);
@@ -1110,12 +1122,13 @@ function packRoms(games) {
   /* Build uniform entries for the shared placement algorithm */
   const entries = games.map((g, i) => ({
     idx: i, size: g.rom?.size || 0, cartType: g.rom?.cartType,
+    cartTitle: g.rom?.cartTitle || '',
     sramSize: g.rom?.sramSize || 0, forceNoSram: g.forceNoSram,
     forceSramSlot: g.forceSramSlot,
     skipReason: g.rom ? undefined : 'no ROM data',
     offset: undefined, sramSlot: undefined, warnReason: undefined,
     /* back-references for flash writing & regs */
-    rom: g.rom, title: g.title, index: g.index,
+    rom: g.rom, title: g.title, index: g.index, mapperPatch: g.mapperPatch,
   }));
 
   computePlacements(entries);
@@ -1123,7 +1136,19 @@ function packRoms(games) {
   /* Write placed ROMs into the flash image */
   for (const g of entries) {
     if (g.offset === undefined || !g.rom) continue;
-    const flashData = prepareFlashData(g.rom.data, g.size, g.cartType);
+    
+    /* Apply mapper patch if available */
+    let romData = g.rom.data;
+    if (g.mapperPatch) {
+      try {
+        const patchBuf = b64ToUint8Array(g.mapperPatch);
+        romData = new Uint8Array(applyBpsPatch(patchBuf, g.rom.data));
+      } catch (e) {
+        log('warn', `  Failed to apply mapper patch to ${g.title}: ${e.message}`);
+      }
+    }
+    
+    const flashData = prepareFlashData(romData, g.size, g.cartType);
     flash.set(flashData.subarray(0, g.size), g.offset);
   }
 
@@ -1171,6 +1196,7 @@ function packRoms(games) {
 function simulatePlacements() {
   const entries = state.games.map((g, i) => ({
     idx: i, size: g.rom.size, cartType: g.rom.cartType,
+    cartTitle: g.rom.cartTitle || '',
     sramSize: g.rom.sramSize, forceNoSram: g.forceNoSram,
     forceSramSlot: g.forceSramSlot,
     offset: undefined, sramSlot: undefined,
@@ -1282,6 +1308,24 @@ const state = PAGE === 'builder'
   ? { menuRom: null, games: [], savFiles: {}, bgImages: [], bgCgb: null, bgDmg: null, newsImage: null, tickerMode: 'text', cgbRenderMode: 'asis', dmgThresholdLow: 64, dmgThresholdHigh: 192, cgbThresholdLow: 64, cgbThresholdHigh: 192, dmgInvert: false, cgbInvert: false, cgbColor0: '#ffffff', cgbColor3: '#000000', cgbSecondary1: '#aaaaaa', cgbSecondary2: '#555555', enableMusic: true }
   : { romData: null, romName: '', savData: null, savName: '', games: [] };
 
+/* --- Mapper Patches (loaded from mapper_patches_b64.js) --- */
+
+let mapperPatches = {};
+
+/** Load mapper patches from embedded constant. */
+function loadMapperPatches() {
+  try {
+    if (typeof MAPPER_PATCHES === 'object' && MAPPER_PATCHES !== null) {
+      mapperPatches = MAPPER_PATCHES;
+      log('ok', `Mapper patches loaded: ${Object.keys(mapperPatches).length} patches available`);
+    } else {
+      log('warn', 'Mapper patches constant not available');
+    }
+  } catch (e) {
+    log('warn', `Failed to load mapper patches: ${errorMessage(e)}`);
+  }
+}
+
 /** Default news text with today's date baked in. */
 function getDefaultTickerText() {
   const d  = new Date();
@@ -1369,8 +1413,9 @@ function addGameRom(name, data) {
   const stem = name.replace(/\.[^.]+$/, '');
   if (state.games.find(g => g.name === name)) { log('info', `${name}: already added`); return; }
 
-  const cartType = data[0x147];
-  let sramSize   = SRAM_SIZES[data[0x149]] || 0;
+  const cartType  = data[0x147];
+  const cartTitle = readCartTitle(data);
+  let sramSize    = SRAM_SIZES[data[0x149]] || 0;
   if (cartType === MBC2_TYPE && sramSize === 0) sramSize = 256;
 
   const romSize = nextPow2(data.length);
@@ -1383,13 +1428,27 @@ function addGameRom(name, data) {
   /* ECJ flag: CRC32 of first $150 bytes identifies the specific ROM */
   const ecjFlag = (data.length >= 0x150 && crc32(data, 0, 0x150) === 0x6715F5ED) ? 1 : 0;
 
+  /* Calculate full ROM CRC32 to check for mapper patches */
+  const fullCrc32 = crc32(data).toString(16).toUpperCase().padStart(8, '0');
+  let mapperPatch = null;
+  if (mapperPatches[fullCrc32]) {
+    mapperPatch = mapperPatches[fullCrc32];
+    log('ok', `${stem}: mapper patch found for CRC32 ${fullCrc32}`);
+  }
+
+  /* Patched ROMs must run as MBC5 on this cart. */
+  const effectiveCartType = mapperPatch ? 0x19 : cartType;
+
   state.games.push({
     name, stem,
     title: stem.replace(/^#\d+\s*/, ''),
     data:  padded,
-    rom:   { data: padded, size: romSize, sramSize, cartType },
+    rom:   { data: padded, size: romSize, sramSize, cartType: effectiveCartType, cartTitle },
+    originalCartType: cartType,
     platform,
     ecjFlag,
+    crc32: fullCrc32,
+    mapperPatch,
     savData:       state.savFiles[stem] || null,
     forceNoSram:   false,
     forceSramSlot: null,
@@ -1398,7 +1457,8 @@ function addGameRom(name, data) {
   /* Keep games sorted naturally by filename */
   state.games.sort((a, b) => natSortKey(a.name).localeCompare(natSortKey(b.name)));
 
-  log('ok', `Game added: ${stem} (${formatSize(romSize)}, ${mapperName(cartType)})`);
+  const mapperLabel = mapperPatch ? `${mapperName(cartType)}→5` : mapperName(effectiveCartType);
+  log('ok', `Game added: ${stem} (${formatSize(romSize)}, ${mapperLabel})`);
 }
 
 /** Store a .sav file and link it to an existing game by stem name. */
@@ -2164,29 +2224,23 @@ function updateGameTableBuilder() {
   let placedIdx  = 0;
 
   state.games.forEach((g, i) => {
-    const p       = placements[i] || {};
-    const mapper  = mapperName(g.rom.cartType);
-    const isMbc1  = MBC1_TYPES.has(g.rom.cartType);
-    const hasSram = g.rom.sramSize > 0;
+    const p             = placements[i] || {};
+    const mapper        = gameMapperLabel(g);
+    const effectiveMapper = mapperName(g.rom.cartType);
+    const hasSram       = g.rom.sramSize > 0;
 
     /* Platform badge */
     const platCls = platformBadgeClass(g.platform);
     const platBadge = `<span class="plat-badge ${platCls}">${g.platform}</span>`;
 
     /* Mapper warning for unsupported types */
-    const mapperWarn = SUPPORTED_MAPPERS.has(mapper) ? ''
+    const mapperWarn = SUPPORTED_MAPPERS.has(effectiveMapper) ? ''
       : ' <span class="sram-warn" title="This mapper may be unsupported.">\u26a0\ufe0f</span>';
 
     /* --- SRAM column HTML --- */
     let sramHtml;
     if (!hasSram) {
       sramHtml = '<span style="color:var(--text3);font-size:.7rem">\u2014</span>';
-      /* MBC1 without SRAM: warn if placed in an even SRAM-slot region */
-      if (isMbc1 && p.offset !== null && p.offset !== undefined) {
-        const romSlot = Math.floor(p.offset / SRAM_BLOCK);
-        if (SRAM_EVEN_SET.has(romSlot))
-          sramHtml += '<span class="sram-warn" title="Not all MBC1 games function properly on this SRAM Slot">\u26a0\ufe0f</span>';
-      }
     } else {
       const autoSlot = p.sramSlot;
       const isAuto   = g.forceSramSlot === null && !g.forceNoSram;
@@ -2209,12 +2263,6 @@ function updateGameTableBuilder() {
       }
       opts.push(`<option value="disable"${g.forceNoSram ? ' selected' : ''}>Disable SRAM</option>`);
       sramHtml = `<select class="sram-select" onchange="setSramSlot(${i},this.value)">${opts.join('')}</select>`;
-
-      /* MBC1 warning on even SRAM slots */
-      const effectiveSlot = g.forceSramSlot !== null ? g.forceSramSlot : autoSlot;
-      if (isMbc1 && effectiveSlot !== null && effectiveSlot !== undefined && SRAM_EVEN_SET.has(effectiveSlot)) {
-        sramHtml += '<span class="sram-warn" title="Not all MBC1 games function properly on this SRAM Slot">\u26a0\ufe0f</span>';
-      }
     }
 
     const isPlaced = p.offset !== null && p.offset !== undefined;
@@ -2331,7 +2379,7 @@ function updateFlashUsage(placements) {
       '<ul>' +
         '<li>Every ROM is rounded up to the next power-of-2 size (32 KiB, 64 KiB, 128 KiB, … up to 8 MiB) and must be aligned to that size in flash.</li>' +
         '<li>Games that need SRAM are placed first. Each one occupies a 2 MiB “slot,” and there are only <b>16 slots</b> total, so at most 16 games can have save data.</li>' +
-        '<li>For best compatibility, MBC1 games will by default use SRAM slots 5, 6, 7, 8, 13, 14, 15, or 16.</li>' +
+        '<li>Some games will be patched to use the MBC5 mapper to resolve incompatibilities.</li>' +
         '<li>Games without SRAM are packed into the remaining free space, smallest first.</li>' +
         '<li>GBMem-Menu supports a maximum of <b>160 games</b> on a single 32 MiB cartridge.</li>' +
       '</ul>' +
@@ -3003,7 +3051,9 @@ async function startBuild() {
         rom.set(slotData, romOffset);
 
         const sramId = Math.floor(r.flashOffset / SRAM_BLOCK);
-        log('ok', `  ${slotIdx}: ${g.title} @ ${formatHexOffset(r.flashOffset)} [${formatRegs(r.v7000, r.v7001, r.v7002)}]`);
+        let logMsg = `  ${slotIdx}: ${g.title} (CRC32: ${g.crc32}) @ ${formatHexOffset(r.flashOffset)} [${formatRegs(r.v7000, r.v7001, r.v7002)}]`;
+        if (g.mapperPatch) logMsg += ' [PATCHED]';
+        log('ok', logMsg);
 
         if ((r.v7002 & V7002_NO_SRAM) === 0) sramPlacements.push({ sramId, stem: g.stem });
         if (slotIdx % 10 === 0) progress(40 + Math.min(35, slotIdx / games.length * 35));
@@ -3091,12 +3141,10 @@ async function startBuild() {
         if (isPlaced) {
           summaryOrd++;
           const sramSlot = p.sramSlot != null ? `SRAM#${p.sramSlot+1}` : '';
-          const mbc1EvenWarn = (!g.rom.sramSize && MBC1_TYPES.has(g.rom.cartType)
-            && SRAM_EVEN_SET.has(Math.floor(p.offset / SRAM_BLOCK))) ? ' ⚠ even slot' : '';
-          log('ok', `  ${String(summaryOrd).padStart(2)}: ${g.title}  [${formatSize(g.rom.size)}, ${mapperName(g.rom.cartType)}, ${g.platform}, SRAM:${sram}]  @ ${formatHexOffset(p.offset)} ${sramSlot}${mbc1EvenWarn}`);
+          log('ok', `  ${String(summaryOrd).padStart(2)}: ${g.title}  [${formatSize(g.rom.size)}, ${gameMapperLabel(g)}, ${g.platform}, SRAM:${sram}]  @ ${formatHexOffset(p.offset)} ${sramSlot}`);
         } else {
           const reason = (p && p.skip) || 'no space';
-          log('warn', `   -: ${g.title}  [${formatSize(g.rom.size)}, ${mapperName(g.rom.cartType)}, ${g.platform}, SRAM:${sram}]  – ${reason}`);
+          log('warn', `   -: ${g.title}  [${formatSize(g.rom.size)}, ${gameMapperLabel(g)}, ${g.platform}, SRAM:${sram}]  – ${reason}`);
         }
       }
     }
@@ -3141,8 +3189,8 @@ async function startBuild() {
       log('info', `News: ${state.newsImage ? state.newsImage.name : 'default'} (image)`);
     }
 
-    log('ok', 'Use the FlashGBX software to write the ROM and Save Data to compatible flash cartridges.');
-    log('head', '=== Build Complete! ===');
+    log('ok', `Use the FlashGBX software to write the ROM and Save Data to compatible flash cartridges.`);
+    log('head', `=== Build of ${outName.replace('.gbc', '')} Complete! ===`);
 
   });
 }
@@ -3612,6 +3660,7 @@ if (PAGE === 'builder') {
 if (PAGE === 'builder') {
   document.getElementById('tickerText').value = getDefaultTickerText();
   document.fonts.ready.then(() => loadDefaultBgPreviews());
+  loadMapperPatches();
 
   const gsBody = document.getElementById('gameSelectionBody');
   gsBody.addEventListener('dragover', e => {
