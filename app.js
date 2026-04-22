@@ -1317,8 +1317,9 @@ function loadMapperPatches() {
   try {
     if (typeof MAPPER_PATCHES === 'object' && MAPPER_PATCHES !== null) {
       mapperPatches = MAPPER_PATCHES;
+      log('ok', `Mapper patches loaded: ${Object.keys(mapperPatches).length} patches available`);
     } else {
-      log('warn', 'Mapper patches not available');
+      log('warn', 'Mapper patches constant not available');
     }
   } catch (e) {
     log('warn', `Failed to load mapper patches: ${errorMessage(e)}`);
@@ -1432,7 +1433,7 @@ function addGameRom(name, data) {
   let mapperPatch = null;
   if (mapperPatches[fullCrc32]) {
     mapperPatch = mapperPatches[fullCrc32];
-    log('ok', `${stem}: mapper patch found for CRC32 ${fullCrc32}`);
+    log('ok', `${stem}: mapper patch found for CRC32 0x${fullCrc32}`);
   }
 
   /* Patched ROMs must run as MBC5 on this cart. */
@@ -3050,7 +3051,7 @@ async function startBuild() {
         rom.set(slotData, romOffset);
 
         const sramId = Math.floor(r.flashOffset / SRAM_BLOCK);
-        let logMsg = `  ${slotIdx}: ${g.title} (CRC32: ${g.crc32}) @ ${formatHexOffset(r.flashOffset)} [${formatRegs(r.v7000, r.v7001, r.v7002)}]`;
+        let logMsg = `  ${slotIdx}: ${g.title} (CRC32: 0x${g.crc32.toString(16).toUpperCase().padStart(8, '0')}) @ ${formatHexOffset(r.flashOffset)} [${formatRegs(r.v7000, r.v7001, r.v7002)}]`;
         if (g.mapperPatch) logMsg += ' [PATCHED]';
         log('ok', logMsg);
 
