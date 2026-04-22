@@ -1317,9 +1317,8 @@ function loadMapperPatches() {
   try {
     if (typeof MAPPER_PATCHES === 'object' && MAPPER_PATCHES !== null) {
       mapperPatches = MAPPER_PATCHES;
-      log('ok', `Mapper patches loaded: ${Object.keys(mapperPatches).length} patches available`);
     } else {
-      log('warn', 'Mapper patches constant not available');
+      log('warn', 'Mapper patches not available');
     }
   } catch (e) {
     log('warn', `Failed to load mapper patches: ${errorMessage(e)}`);
