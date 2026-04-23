@@ -475,6 +475,11 @@ header p {
   white-space: nowrap;
 }
 
+.game-table td[data-label="Size"], .game-table td[data-label="Registers"], .game-table td[data-label="Offset"] {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .game-table tr:hover td {
   background: var(--bg3);
 }
