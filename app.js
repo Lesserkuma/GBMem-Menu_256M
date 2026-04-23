@@ -108,6 +108,13 @@ const MAPPER_MAX_SIZE = {
 /* Mappers known to work on the 256M cart ----------------------- */
 const SUPPORTED_MAPPERS = new Set(['ROM', 'MBC1', 'MBC2', 'MBC3', 'MBC5']);
 
+/* ROM CRC32 values known to be potentially unsupported ---------- */
+const UNSUPPORTED_CRC32 = new Set([
+  '509A6B73', '005AD4B7', '06CC1E9D', 'AF2B426E', 'E5989908', 'AF4A5DE1',
+  'B2EEDD36', '53FF8041', 'AD376905', '562C8F7F', 'B1A8DFD0', '55300D0A',
+  '7D1D8FDC', '6DBAA5E8',
+]);
+
 
 /* --- Low-Level Utilities --- */
 
@@ -1317,7 +1324,6 @@ function loadMapperPatches() {
   try {
     if (typeof MAPPER_PATCHES === 'object' && MAPPER_PATCHES !== null) {
       mapperPatches = MAPPER_PATCHES;
-      log('ok', `Mapper patches loaded: ${Object.keys(mapperPatches).length} patches available`);
     } else {
       log('warn', 'Mapper patches constant not available');
     }
@@ -1430,10 +1436,14 @@ function addGameRom(name, data) {
 
   /* Calculate full ROM CRC32 to check for mapper patches */
   const fullCrc32 = crc32(data).toString(16).toUpperCase().padStart(8, '0');
+  const unsupportedCrc32 = UNSUPPORTED_CRC32.has(fullCrc32);
   let mapperPatch = null;
   if (mapperPatches[fullCrc32]) {
     mapperPatch = mapperPatches[fullCrc32];
     log('ok', `${stem}: mapper patch found for CRC32 0x${fullCrc32}`);
+  }
+  if (unsupportedCrc32) {
+    log('warn', `${stem}: This game may be unsupported.`);
   }
 
   /* Patched ROMs must run as MBC5 on this cart. */
@@ -1448,6 +1458,7 @@ function addGameRom(name, data) {
     platform,
     ecjFlag,
     crc32: fullCrc32,
+    unsupportedCrc32: unsupportedCrc32,
     mapperPatch,
     savData:       state.savFiles[stem] || null,
     forceNoSram:   false,
@@ -2236,6 +2247,9 @@ function updateGameTableBuilder() {
     /* Mapper warning for unsupported types */
     const mapperWarn = SUPPORTED_MAPPERS.has(effectiveMapper) ? ''
       : ' <span class="sram-warn" title="This mapper may be unsupported.">\u26a0\ufe0f</span>';
+    const gameWarn = g.unsupportedCrc32
+      ? ' <span class="sram-warn" title="This game may be unsupported.">\u26a0\ufe0f</span>'
+      : '';
 
     /* --- SRAM column HTML --- */
     let sramHtml;
@@ -2272,10 +2286,10 @@ function updateGameTableBuilder() {
 
     if (isPlaced) {
       placedIdx++;
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}</td><td data-label="ROM Size" class="offset-cell">${formatSize(g.rom.size)}</td><td data-label="Offset" class="offset-cell">${formatHexOffset(p.offset)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}</td><td data-label="ROM Size" class="offset-cell">${formatSize(g.rom.size)}</td><td data-label="Offset" class="offset-cell">${formatHexOffset(p.offset)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
     } else {
       const reason = p.skip || 'no space';
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}</td><td data-label="Status" class="offset-cell" colspan="3" style="color:var(--red)">${formatSize(g.rom.size)} &ndash; \u26a0\ufe0f ${esc(reason)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}</td><td data-label="Status" class="offset-cell" colspan="3" style="color:var(--red)">${formatSize(g.rom.size)} &ndash; \u26a0\ufe0f ${esc(reason)}</td></tr>`;
     }
 
     if (isPlaced) placed.push(row);
