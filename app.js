@@ -1008,6 +1008,40 @@ function computePlacements(entries) {
     return true;
   }
   function markRegion(pos, sz) { occupied.push({ s: pos, e: pos + sz }); }
+  function sramSlotsForSize(sz) { return Math.max(1, Math.ceil(sz / SRAM_BLOCK)); }
+
+  function placeWithSramStartSlot(g, slot) {
+    const sramSlots = sramSlotsForSize(g.size);
+    const endAllowedSlot = slot + sramSlots - 1;
+    if (slot < 0 || endAllowedSlot >= SRAM_NUM_SLOTS) return false;
+
+    let conflict = false;
+    for (let s = slot; s <= endAllowedSlot; s++) {
+      if (sramUsed.has(s)) { conflict = true; break; }
+    }
+    if (conflict) return false;
+
+    const blkStart = slot * SRAM_BLOCK;
+    const blkEnd   = (endAllowedSlot + 1) * SRAM_BLOCK;
+    let pos = Math.max(blkStart, MENU_SIZE);
+    const rem = pos % g.size;
+    if (rem) pos += g.size - rem;
+
+    while (pos + g.size <= blkEnd && pos + g.size <= FLASH_SIZE) {
+      const startSlot = Math.floor(pos / SRAM_BLOCK);
+      const endSlot   = Math.floor((pos + g.size - 1) / SRAM_BLOCK);
+      if (startSlot !== slot || endSlot > endAllowedSlot) { pos += g.size; continue; }
+      if (!regionFree(pos, g.size)) { pos += g.size; continue; }
+
+      markRegion(pos, g.size);
+      g.offset = pos;
+      g.sramSlot = startSlot;
+      for (let s = startSlot; s <= endSlot; s++) sramUsed.add(s);
+      return true;
+    }
+
+    return false;
+  }
 
   const maxGames = GAMEDB_GAMES_PER_BANK * 4;
   for (let i = maxGames; i < entries.length; i++) {
@@ -1039,22 +1073,7 @@ function computePlacements(entries) {
       const slot = g.forceSramSlot;
       const slot_s = g.forceSramSlot + 1;
       if (slot < 0 || slot > 15) { g.skipReason = `invalid SRAM slot #${slot_s}`; return false; }
-      const blkStart = slot * SRAM_BLOCK;
-      const blkEnd   = blkStart + SRAM_BLOCK;
-      let pos = Math.max(blkStart, MENU_SIZE);
-      const rem = pos % g.size;
-      if (rem) pos += g.size - rem;
-      while (pos + g.size <= blkEnd && pos + g.size <= FLASH_SIZE) {
-        if (regionFree(pos, g.size)) {
-          markRegion(pos, g.size);
-          g.offset = pos;
-          g.sramSlot = slot;
-          const endSlot = Math.floor((pos + g.size - 1) / SRAM_BLOCK);
-          for (let s = slot; s <= endSlot; s++) sramUsed.add(s);
-          return true;
-        }
-        pos += g.size;
-      }
+      if (placeWithSramStartSlot(g, slot)) return true;
       g.skipReason = `SRAM slot #${slot_s}: no free space`;
       return false;
     }
@@ -1063,27 +1082,7 @@ function computePlacements(entries) {
     if (hasSram) {
       const slotOrder = [...Array(SRAM_NUM_SLOTS).keys()];
       for (const slot of slotOrder) {
-        if (sramUsed.has(slot)) continue;
-        const blk = slot * SRAM_BLOCK;
-        let pos = Math.max(blk, MENU_SIZE);
-        const rem = pos % g.size;
-        if (rem) pos += g.size - rem;
-        if (pos + g.size > FLASH_SIZE) continue;
-        const startSlot = Math.floor(pos / SRAM_BLOCK);
-        const endSlot   = Math.floor((pos + g.size - 1) / SRAM_BLOCK);
-        if (startSlot < slot) continue;
-        const neededSlots = new Set();
-        for (let s = startSlot; s <= endSlot; s++) neededSlots.add(s);
-        if (startSlot + neededSlots.size > 16) continue;
-        let conflict = false;
-        for (const s of neededSlots) if (sramUsed.has(s)) { conflict = true; break; }
-        if (conflict) continue;
-        if (!regionFree(pos, g.size)) continue;
-        markRegion(pos, g.size);
-        g.offset = pos;
-        g.sramSlot = slot;
-        for (const s of neededSlots) sramUsed.add(s);
-        return true;
+        if (placeWithSramStartSlot(g, slot)) return true;
       }
       g.skipReason = 'exceeds max SRAM slots';
       return false;
