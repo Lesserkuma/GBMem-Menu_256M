@@ -1828,7 +1828,7 @@ function fixChecksums(rom) {
 /* --- Application State --- */
 
 const state = PAGE === 'builder'
-  ? { menuRom: null, games: [], savFiles: {}, bgImages: [], bgCgb: null, bgDmg: null, newsImage: null, tickerMode: 'text', cgbRenderMode: 'asis', dmgThresholdLow: 64, dmgThresholdHigh: 192, cgbThresholdLow: 64, cgbThresholdHigh: 192, dmgInvert: false, cgbInvert: false, cgbColor0: '#ffffff', cgbColor3: '#000000', cgbSecondary1: '#aaaaaa', cgbSecondary2: '#555555', enableMusic: true }
+  ? { menuRom: null, games: [], savFiles: {}, bgImages: [], bgCgb: null, bgDmg: null, newsImage: null, tickerMode: 'text', cgbRenderMode: 'asis', dmgThresholdLow: 64, dmgThresholdHigh: 192, cgbThresholdLow: 64, cgbThresholdHigh: 192, dmgInvert: false, cgbInvert: false, cgbColor0: '#ffffff', cgbColor3: '#000000', cgbSecondary1: '#aaaaaa', cgbSecondary2: '#555555', enableMusic: true, skipRebootOnCgbGames: false }
   : { romData: null, romName: '', savData: null, savName: '', games: [] };
 
 /* --- Mapper Patches (loaded from mapper_patches_b64.js) --- */
@@ -3178,6 +3178,10 @@ function onEnableMusicChange() {
   state.enableMusic = document.getElementById('enableMusic').checked;
 }
 
+function onSkipRebootOnCgbGamesChange() {
+  state.skipRebootOnCgbGames = document.getElementById('skipRebootOnCgbGames').checked;
+}
+
 function setCgbRenderMode(mode) {
   state.cgbRenderMode = mode;
   document.getElementById('cgbModeAsisBtn').classList.toggle('active', mode === 'asis');
@@ -3444,9 +3448,12 @@ async function startBuild() {
     log('ok', `Patched menu ROM: ${rom.length} bytes`);
 
     log('head', '=== Menu Settings ===');
-    /* Write music enable flag to ROM offset $8005 (bit 0) */
-    rom[0x8005] = (rom[0x8005] & 0xFE) | (state.enableMusic ? 1 : 0);
+    /* Write menu options to ROM offset $8005. */
+    rom[0x8005] = (rom[0x8005] & 0xFC)
+      | (state.enableMusic ? 0x01 : 0x00)
+      | (state.skipRebootOnCgbGames ? 0x00 : 0x02);
     log('ok', `Music: ${state.enableMusic ? 'enabled' : 'disabled'}`);
+    log('ok', `Skip reboot on CGB games: ${state.skipRebootOnCgbGames ? 'enabled' : 'disabled'}`);
 
     progress(10);
     await sleep(0);
@@ -3745,6 +3752,7 @@ async function startBuild() {
     log('info', `CGB Background: ${state.bgCgb ? state.bgCgb.name : 'default'}  [${cgbParts.join(', ')}]`);
     log('info', `DMG Background: ${state.bgDmg ? state.bgDmg.name : 'default'}  [thresholds: dark=${state.dmgThresholdLow}, light=${state.dmgThresholdHigh}${state.dmgInvert ? ', inverted' : ''}]`);
     log('info', `Music: ${state.enableMusic ? 'enabled' : 'disabled'}`);
+    log('info', `Skip reboot on CGB games: ${state.skipRebootOnCgbGames ? 'enabled' : 'disabled'}`);
 
     /* News ticker */
     if (state.tickerMode === 'text') {

@@ -835,14 +835,25 @@ header p {
 
 .menu-options {
   margin-top: .75rem;
+  display: flex;
+  flex-direction: column;
 }
 
 .menu-options label {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .45rem .25rem;
   font-size: .7rem;
   color: var(--text2);
   text-transform: uppercase;
   letter-spacing: .05em;
+}
+
+.menu-options input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
 }
 
 @media (max-width: 550px) {
