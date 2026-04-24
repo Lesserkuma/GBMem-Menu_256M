@@ -2478,7 +2478,7 @@ function updateGameTableBuilder() {
       && p.sramSlot !== null && p.sramSlot !== undefined
       && ((p.v7002 & V7002_NO_SRAM_MODE) === 0)
       && sharedSramKeys.has(sramShareKey(p.sramSlot, reqSlotsForRow)))
-      ? ' <span class="sram-share" title="Teilt Savedata mit mindestens einem weiteren Spiel.">🔗</span>'
+      ? ' <span class="sram-share" title="Shares save data with at least one other game.">🔗</span>'
       : '';
     const n = state.games.length;
     const moveBtns = `<td class="move-cell"><button class="move-btn" onclick="moveGameUp(${i})"${i === 0 ? ' disabled' : ''}>\u25b2</button><button class="move-btn" onclick="moveGameDown(${i})"${i === n - 1 ? ' disabled' : ''}>\u25bc</button></td>`;
