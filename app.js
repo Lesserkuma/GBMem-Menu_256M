@@ -2512,7 +2512,7 @@ function updateGameTableBuilder() {
   gsBody.innerHTML =
     '<table class="game-table"><thead><tr>' +
     '<th>#</th><th class="move-col-head"></th><th>Filename</th><th>Game Title</th><th>SRAM Slot</th>' +
-    '<th>Platform</th><th>Size</th><th>Offset</th><th>Registers</th>' +
+    '<th>Platform</th><th>Size</th><th>Location</th><th>Registers</th>' +
     '</tr></thead><tbody>' + finalRows.join('') + '</tbody></table>';
 
   updateFlashUsage(placements);
@@ -3653,7 +3653,7 @@ function updateGameTableExtractor() {
 
   let html = '<table class="game-table"><thead><tr>' +
     '<th>#</th><th>Game Title</th><th>SRAM Slot</th><th>Platform</th>' +
-    '<th>Size</th><th>Offset</th><th>Registers</th>' +
+    '<th>Size</th><th>Location</th><th>Registers</th>' +
     '</tr></thead><tbody>';
 
   for (const g of state.games) {
