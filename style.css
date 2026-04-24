@@ -607,6 +607,11 @@ header p {
   margin-left: .3rem;
 }
 
+.game-table .sram-share {
+  margin-left: .25rem;
+  cursor: help;
+}
+
 .game-table .plat-badge {
   display: inline-block;
   font-size: .55rem;
