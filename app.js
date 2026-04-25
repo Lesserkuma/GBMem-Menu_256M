@@ -37,6 +37,7 @@ const SRAM_SIZES      = { 0: 0, 1: 0, 2: 0x2000, 3: 0x8000, 4: 0x20000, 5: 0x100
 const V7002_MBC1_ADVANCE_MODE   = 0x04;
 const V7002_LAST_SRAM_BANK_MODE = 0x20;
 const V7002_NO_SRAM_MODE        = 0x40;
+const LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS = new Set([0, 1, 2, 3, 8, 9, 10, 11]);
 
 /* News-ticker layout ------------------------------------------- */
 const NEWS_BANK_OFFSET = 0xC000;
@@ -113,13 +114,11 @@ const SUPPORTED_MAPPERS = new Set(['ROM', 'MBC1', 'MBC2', 'MBC3', 'MBC5']);
 
 /* ROM CRC32 values known to be potentially unsupported ---------- */
 const UNSUPPORTED_CRC32 = new Set([
-  '509A6B73', '005AD4B7', '06CC1E9D', 'AF2B426E', 'E5989908', 'AF4A5DE1',
-  'B2EEDD36', '53FF8041', 'AD376905', '562C8F7F', 'B1A8DFD0', '55300D0A',
-  '7D1D8FDC', '6DBAA5E8',
+  '509A6B73', '005AD4B7', '06CC1E9D', 'AF2B426E', 'B2EEDD36', 'AD376905',
+  '562C8F7F', 'B1A8DFD0', '55300D0A', '7D1D8FDC', '6DBAA5E8'
 ]);
 
-/* Only these ROM CRC32 values enable v7002 bit 2 (Advance Mode). */
-const ADVANCE_MODE_CRC32 = new Set(['B526A116']);
+const ADVANCE_MODE_TITLE = 'CHINESE FIGHTER';
 
 
 /* --- Low-Level Utilities --- */
@@ -943,22 +942,23 @@ function gameMapperLabel(game) {
 /**
  * Compute 256M register flags for a given mapper/SRAM combination.
  * These go into the v7002 register byte (bit layout per NP firmware):
- *   bit 2 (0x04) — MBC1 Advance Mode (only for ADVANCE_MODE_CRC32)
+ *   bit 2 (0x04) — MBC1 Advance Mode
  *   bit 5 (0x20) — Last SRAM Bank Mode
  *   bit 6 (0x40) — No SRAM Mode
  */
-function v7002Flags(cartType, sramSize, romCrc32, sramSlot) {
+function v7002Flags(cartType, sramSize, romSize, cartTitle, sramSlot) {
   let flags = 0;
-  const crc = String(romCrc32 || '').replace(/^0x/i, '').toUpperCase();
   const isMbc123 = MBC1_TYPES.has(cartType) || MBC2_TYPES.has(cartType) || MBC3_TYPES.has(cartType);
   const hasBackAlignedSramSlot =
     sramSlot !== undefined && sramSlot !== null && sramSlot >= 0 &&
-    (sramSlotOffset(sramSlot) % SRAM_SLOT_PAIR_STRIDE) === SRAM_SLOT_ODD_OFFSET;
+    (sramSlot % 2) === 1 && canUseLastSramBankModeForSlot(sramSlot);
   if (isMbc123 && sramSize > 0 && sramSize < SRAM_SLOT_SIZE * 2 && hasBackAlignedSramSlot) {
     flags |= V7002_LAST_SRAM_BANK_MODE;
   }
-  if (MBC1_TYPES.has(cartType)) {
-    if (ADVANCE_MODE_CRC32.has(crc)) flags |= V7002_MBC1_ADVANCE_MODE;
+  if (isAdvanceModeGameLike({ cartType, size: romSize, cartTitle })
+      && sramSlot !== undefined && sramSlot !== null && sramSlot >= 0
+      && LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(sramBlockIndexForSlot(sramSlot))) {
+    flags |= V7002_MBC1_ADVANCE_MODE;
   }
   if (sramSize <= 0)            flags |= V7002_NO_SRAM_MODE;
   return flags;
@@ -977,6 +977,28 @@ function sramDataChunkOffset(startSlot, chunkIndex, chunkCount) {
   return sramSlotOffset(startSlot + chunkIndex);
 }
 
+function sramBlockIndexForSlot(slotIdx) {
+  return Math.floor(slotIdx / 2);
+}
+
+function canUseLastSramBankModeForSlot(slotIdx) {
+  if (slotIdx === undefined || slotIdx === null || slotIdx < 0 || slotIdx >= SRAM_NUM_SLOTS) return false;
+  return LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(sramBlockIndexForSlot(slotIdx));
+}
+
+function sramChunkLength(startSlot, chunkIndex, chunkCount, totalBytes, bufferLength = SRAM_TOTAL_SIZE) {
+  const srcOff = chunkIndex * SRAM_SLOT_SIZE;
+  const maxBytes = totalBytes ?? (chunkCount * SRAM_SLOT_SIZE);
+  if (srcOff >= maxBytes) return 0;
+  const dstOff = sramDataChunkOffset(startSlot, chunkIndex, chunkCount);
+  if (dstOff < 0 || dstOff >= bufferLength) return 0;
+  return Math.max(0, Math.min(
+    SRAM_SLOT_SIZE,
+    maxBytes - srcOff,
+    bufferLength - dstOff,
+  ));
+}
+
 function isPatchedMbc123ToMbc5(gameLike) {
   const cartType = gameLike?.cartType ?? gameLike?.rom?.cartType;
   if (!gameLike?.mapperPatch || cartType !== 0x19) return false;
@@ -990,8 +1012,21 @@ function isMbc5CartType(gameLike) {
   return mapperName(cartType) === 'MBC5';
 }
 
-function canUseOddSingleSramSlot(gameLike) {
-  return !isMbc5CartType(gameLike);
+function isAdvanceModeGameLike(gameLike) {
+  const cartType = gameLike?.cartType ?? gameLike?.rom?.cartType;
+  const romSize = gameLike?.size ?? gameLike?.rom?.size ?? 0;
+  const title = String(gameLike?.cartTitle ?? gameLike?.rom?.cartTitle ?? '').trim().toUpperCase();
+  return MBC1_TYPES.has(cartType) && romSize === 0x100000 && title === ADVANCE_MODE_TITLE;
+}
+
+function canUseOddSingleSramSlot(gameLike, slotIdx = null) {
+  if (isMbc5CartType(gameLike)) return false;
+  if (slotIdx === undefined || slotIdx === null) return true;
+  if ((slotIdx % 2) === 0) return true;
+  const cartType = gameLike?.cartType ?? gameLike?.rom?.cartType;
+  const isMbc123 = MBC1_TYPES.has(cartType) || MBC2_TYPES.has(cartType) || MBC3_TYPES.has(cartType);
+  if (!isMbc123) return true;
+  return canUseLastSramBankModeForSlot(slotIdx);
 }
 
 function requiredSramSlots(romSize, sramSize, gameLike) {
@@ -1026,6 +1061,21 @@ function prepareFlashData(romData, romSize, cartType) {
     return out;
   }
   return romData;
+}
+
+function shouldRestoreMbc1BlockOrder(gameLike) {
+  const romSize = gameLike?.romSize ?? gameLike?.size ?? gameLike?.rom?.size ?? 0;
+  if (romSize <= MBC1_BLOCK_SIZE) return false;
+  const cartType = gameLike?.cartType ?? gameLike?.rom?.cartType;
+  const hasAdvanceModeFlag = ((gameLike?.v7002 ?? 0) & V7002_MBC1_ADVANCE_MODE) !== 0;
+  return MBC1_TYPES.has(cartType) || hasAdvanceModeFlag;
+}
+
+function restoreExtractedRomData(romData, gameLike) {
+  if (!shouldRestoreMbc1BlockOrder(gameLike)) return romData;
+  const romSize = gameLike?.romSize ?? gameLike?.size ?? gameLike?.rom?.size ?? romData.length;
+  // MBC1 512 KiB+ images are block-flipped in flash; undo that for extracted files.
+  return prepareFlashData(romData, romSize, 0x01);
 }
 
 /** Pre-validate a game ROM; returns an error reason or null. */
@@ -1272,6 +1322,8 @@ function computePlacements(entries) {
       return [group.fixedStartSlot];
     }
 
+    const needsAdvanceMode = group.auto && group.games.some(isAdvanceModeGameLike);
+
     const starts = [];
     const slotOrder = [];
     if (group.reqSlots === 1) {
@@ -1287,9 +1339,11 @@ function computePlacements(entries) {
       const endSlot = slot + group.reqSlots - 1;
       if (endSlot >= SRAM_NUM_SLOTS) continue;
       if (group.reqSlots > 1 && (slot % 2) !== 0) continue;
+      if (group.reqSlots === 1 && (slot % 2) === 1 && !group.games.every(g => canUseOddSingleSramSlot(g, slot))) continue;
 
       const startBlock = Math.floor(slot / 2);
       if (group.blockSpan > 1 && (startBlock % group.blockSpan) !== 0) continue;
+      if (needsAdvanceMode && !LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(startBlock)) continue;
 
       let blocked = false;
       for (let s = slot; s <= endSlot; s++) {
@@ -1419,7 +1473,7 @@ function computePlacements(entries) {
       const slotNum = g.forceSramSlot + 1;
       if (g.forceSramSlot < 0 || g.forceSramSlot >= SRAM_NUM_SLOTS) g.skipReason = `invalid SRAM slot #${slotNum}`;
       else if (g._reqSramSlots > 1 && (g.forceSramSlot % 2) !== 0) g.skipReason = `SRAM slot #${slotNum}: invalid start`;
-      else if (g._reqSramSlots === 1 && (g.forceSramSlot % 2) === 1 && !canUseOddSingleSramSlot(g)) g.skipReason = `SRAM slot #${slotNum}: unsupported for MBC5`;
+      else if (g._reqSramSlots === 1 && (g.forceSramSlot % 2) === 1 && !canUseOddSingleSramSlot(g, g.forceSramSlot)) g.skipReason = `SRAM slot #${slotNum}: unsupported odd-slot mode`;
     }
     if (g.sramSize > SRAM_SLOT_SIZE * 2) g.warnReason = 'SRAM > 32 KiB (truncated)';
   }
@@ -1427,6 +1481,9 @@ function computePlacements(entries) {
   const active = work.filter(g => !g.skipReason);
   const grouped = buildSramGroups(active);
   const sramGroups = grouped.groups.sort((a, b) => {
+    const aManual = a.fixedStartSlot !== null && a.fixedStartSlot !== undefined;
+    const bManual = b.fixedStartSlot !== null && b.fixedStartSlot !== undefined;
+    if (aManual !== bManual) return aManual ? -1 : 1;
     if (b.blockSpan !== a.blockSpan) return b.blockSpan - a.blockSpan;
     if (b.reqSlots !== a.reqSlots) return b.reqSlots - a.reqSlots;
     if (b.totalSize !== a.totalSize) return b.totalSize - a.totalSize;
@@ -1465,7 +1522,7 @@ function computePlacements(entries) {
     if (placements.has(g.idx)) continue;
     g.offset = undefined;
     g.sramSlot = undefined;
-    g.skipReason = 'ROM total space full';
+    g.skipReason = 'Can\'t fit in flash';
   }
 
   for (const g of work) {
@@ -1549,7 +1606,7 @@ function packRoms(games) {
     regs[g.index] = {
       v7000: bankNum & 0xFF,
       v7001: (256 - g.size / BANK_PAIR_SIZE) & 0xFF,
-      v7002: ((bankNum >> 8) & 0x03) | v7002Flags(g.cartType, effectiveSram, g.crc32, g.sramSlot),
+      v7002: ((bankNum >> 8) & 0x03) | v7002Flags(g.cartType, effectiveSram, g.size, g.cartTitle, g.sramSlot),
       cgbFlag,
       flashOffset: g.offset,
       sramSlot: g.sramSlot,
@@ -1608,14 +1665,14 @@ function simulatePlacements() {
         offset: g.offset,
         v7000: bn & 0xFF,
         v7001: (256 - g.size / BANK_PAIR_SIZE) & 0xFF,
-        v7002: ((bn >> 8) & 0x03) | v7002Flags(g.cartType, eSram, g.crc32, g.sramSlot),
+        v7002: ((bn >> 8) & 0x03) | v7002Flags(g.cartType, eSram, g.size, g.cartTitle, g.sramSlot),
         sramSlot: g.sramSlot,
       };
     } else {
       results[g.idx] = {
         offset: null, v7000: null,
         v7001: (256 - g.size / BANK_PAIR_SIZE) & 0xFF,
-        v7002: v7002Flags(g.cartType, g.forceNoSram ? 0 : g.sramSize, g.crc32, g.sramSlot),
+        v7002: v7002Flags(g.cartType, g.forceNoSram ? 0 : g.sramSize, g.size, g.cartTitle, g.sramSlot),
         sramSlot: null, skip: g.skipReason,
       };
     }
@@ -2415,6 +2472,32 @@ function removeGame(idx) {
   updateGamesUI();
 }
 
+function parseTitleCellGameIdx(cell) {
+  const dataIdx = cell?.dataset?.gameIdx;
+  if (dataIdx !== undefined && dataIdx !== null && dataIdx !== '') {
+    const parsed = parseInt(dataIdx, 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  const handler = cell?.getAttribute('onclick') || '';
+  const match = handler.match(/editGameTitle\((\d+),/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function findTitleCellByGameIdx(gameIdx) {
+  const cells = [...document.querySelectorAll('#gameSelectionBody td.title-cell')];
+  return cells.find(cell => parseTitleCellGameIdx(cell) === gameIdx) || null;
+}
+
+function neighborTitleGameIdx(currentGameIdx, step) {
+  const cells = [...document.querySelectorAll('#gameSelectionBody td.title-cell')];
+  const order = cells.map(parseTitleCellGameIdx).filter(idx => idx !== null);
+  const at = order.indexOf(currentGameIdx);
+  if (at < 0 || order.length <= 1) return null;
+  const nextAt = at + step;
+  if (nextAt < 0 || nextAt >= order.length) return null;
+  return order[nextAt];
+}
+
 /** Inline-edit a game title in the table. */
 function editGameTitle(idx, el) {
   if (el.querySelector('input')) return;
@@ -2427,14 +2510,28 @@ function editGameTitle(idx, el) {
   input.type  = 'text';
   input.value = current;
 
-  function commit() {
+  let done = false;
+  function commit(nextIdx = null) {
+    if (done) return;
+    done = true;
     state.games[idx].title = input.value.trim();
     updateGameTable();
+    if (nextIdx === null || nextIdx === undefined) return;
+    setTimeout(() => {
+      const nextCell = findTitleCellByGameIdx(nextIdx);
+      if (nextCell) editGameTitle(nextIdx, nextCell);
+    }, 0);
   }
 
   input.addEventListener('blur', commit);
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const step = e.shiftKey ? -1 : 1;
+      const nextIdx = neighborTitleGameIdx(idx, step);
+      commit(nextIdx);
+    }
     if (e.key === 'Escape') { updateGameTable(); }
   });
   input.addEventListener('mousedown', e => e.stopPropagation());
@@ -2651,6 +2748,14 @@ function updateGameTableBuilder() {
     const gameWarn = g.unsupportedCrc32
       ? ' <span class="sram-warn" title="This game may be unsupported.">\u26a0\ufe0f</span>'
       : '';
+    const hasPlacedSram = p.sramSlot !== null && p.sramSlot !== undefined && p.sramSlot >= 0
+      && ((p.v7002 ?? V7002_NO_SRAM_MODE) & V7002_NO_SRAM_MODE) === 0;
+    const advanceModeBlockWarn = (p.offset !== null && p.offset !== undefined)
+      && isAdvanceModeGameLike(g)
+      && hasPlacedSram
+      && !LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(sramBlockIndexForSlot(p.sramSlot))
+      ? ' <span class="sram-warn" title="This game may not work with this SRAM slot.">\u26a0\ufe0f</span>'
+      : '';
 
     /* --- SRAM column HTML --- */
     let sramHtml;
@@ -2674,7 +2779,7 @@ function updateGameTableBuilder() {
       for (let s = 0; s < SRAM_NUM_SLOTS; s++) {
         if (Math.floor(s / 2) % alignBlocks !== 0) continue;
         if (reqSlots > 1 && (s % 2) !== 0) continue;
-        if (reqSlots === 1 && (s % 2) === 1 && !canUseOddSingleSramSlot(g.rom)) continue;
+        if (reqSlots === 1 && (s % 2) === 1 && !canUseOddSingleSramSlot(g.rom, s)) continue;
         const endS  = s + reqSlots - 1;
         if (endS >= SRAM_NUM_SLOTS) continue;
         const label = reqSlots > 1 ? 'Slots ' + (s + 1) + '&ndash;' + (endS + 1) : 'Slot ' + (s + 1);
@@ -2698,10 +2803,10 @@ function updateGameTableBuilder() {
 
     if (isPlaced) {
       placedIdx++;
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Offset" class="offset-cell">${formatRomSramOffset(p.offset, p.sramSlot)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Offset" class="offset-cell">${formatRomSramOffset(p.offset, p.sramSlot)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
     } else {
       const reason = p.skip || 'no space';
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Status" class="offset-cell" colspan="2" style="color:var(--red)">\u26a0\ufe0f ${esc(reason)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Status" class="offset-cell" colspan="2" style="color:var(--red)">\u26a0\ufe0f ${esc(reason)}</td></tr>`;
     }
 
     if (isPlaced) placed.push(row);
@@ -2804,9 +2909,8 @@ function updateFlashUsage(placements) {
       '<p><b>How games are placed in flash by this tool:</b></p>' +
       '<ul>' +
         '<li>Every ROM is rounded up to the next power-of-2 size (32 KiB, 64 KiB, 128 KiB, … up to 8 MiB) and must be aligned to that size in flash.</li>' +
-        '<li>Games that need SRAM are placed first. Each 2 MiB flash block maps to either one 32 KiB or two 8 KiB SRAM slots (up to 32 total).</li>' +
+        '<li>Each 2 MiB flash block maps to either an SRAM block of 32 KiB. In blocks 0, 1, 2, 3, 8, 9, 10 and 11, the block can also be divided into two 8 KiB SRAM slots (up to 24 slots total).</li>' +
         '<li>Some games will be patched to use the MBC5 mapper to resolve incompatibilities.</li>' +
-        '<li>Games without SRAM are packed into the remaining free space, smallest first.</li>' +
         '<li>GBMem-Menu supports a maximum of <b>160 games</b> on a single 32 MiB cartridge.</li>' +
       '</ul>' +
     '</div>';
@@ -3496,7 +3600,10 @@ async function startBuild() {
         if (g.mapperPatch) logMsg += ' [PATCHED]';
         log('ok', logMsg);
 
-        if ((r.v7002 & V7002_NO_SRAM_MODE) === 0) sramPlacements.push({ sramId, sramSlots, stem: g.stem });
+        if ((r.v7002 & V7002_NO_SRAM_MODE) === 0) {
+          const sramBytes = Math.min(Math.max(g.rom.sramSize || 0, 0), sramSlots * SRAM_SLOT_SIZE);
+          sramPlacements.push({ sramId, sramSlots, sramBytes, stem: g.stem });
+        }
         if (slotIdx % 10 === 0) progress(40 + Math.min(35, slotIdx / games.length * 35));
       }
 
@@ -3526,13 +3633,21 @@ async function startBuild() {
         for (const p of sramPlacements) {
           const savFile = state.savFiles[p.stem];
           if (!savFile) continue;
+          const totalBytes = Math.min(
+            p.sramBytes || (p.sramSlots * SRAM_SLOT_SIZE),
+            p.sramSlots * SRAM_SLOT_SIZE,
+          );
           for (let i = 0; i < p.sramSlots; i++) {
             const slot = p.sramId + i;
             if (slot < 0 || slot >= SRAM_NUM_SLOTS) continue;
-            const chunk = new Uint8Array(SRAM_SLOT_SIZE);
             const srcOff = i * SRAM_SLOT_SIZE;
-            chunk.set(savFile.subarray(srcOff, srcOff + SRAM_SLOT_SIZE));
-            savBuf.set(chunk, sramDataChunkOffset(p.sramId, i, p.sramSlots));
+            const dstOff = sramDataChunkOffset(p.sramId, i, p.sramSlots);
+            const chunkLen = Math.min(
+              sramChunkLength(p.sramId, i, p.sramSlots, totalBytes, savBuf.length),
+              Math.max(0, savFile.length - srcOff),
+            );
+            if (chunkLen <= 0) continue;
+            savBuf.set(savFile.subarray(srcOff, srcOff + chunkLen), dstOff);
           }
           log('ok', `  Slots ${p.sramId + 1}-${p.sramId + p.sramSlots}: ${p.stem}.sav (${savFile.length} bytes)`);
           foundAny = true;
@@ -3753,23 +3868,25 @@ function parseGameDatabase() {
 
       if (romSize === 0 || flashOff + romSize > rom.length) continue;
 
-      const romStart = flashOff;
-      const cartType = romStart + 0x147 < rom.length ? rom[romStart + 0x147] : 0;
-      const sramCode = romStart + 0x149 < rom.length ? rom[romStart + 0x149] : 0;
+      const flashSlice = rom.slice(flashOff, flashOff + romSize);
+      const romView = restoreExtractedRomData(flashSlice, { romSize, v7002 });
+      const cartType = romView.length > 0x147 ? romView[0x147] : 0;
+      const sramCode = romView.length > 0x149 ? romView[0x149] : 0;
       const sramSize = MBC2_TYPES.has(cartType) ? 512 : (SRAM_SIZES[sramCode] || 0);
       const reqSramSlots = requiredSramSlots(romSize, sramSize, { cartType });
       let sramSlot = -1;
       if (hasSram) {
         const baseSlot = Math.floor(flashOff / SRAM_BLOCK) * 2;
-        const backAligned = (v7002 & V7002_LAST_SRAM_BANK_MODE) !== 0;
+        const backAligned = (v7002 & V7002_LAST_SRAM_BANK_MODE) !== 0
+          && canUseLastSramBankModeForSlot(baseSlot + 1);
         sramSlot = (reqSramSlots === 1 && backAligned) ? (baseSlot + 1) : baseSlot;
         if (sramSlot < 0 || sramSlot >= SRAM_NUM_SLOTS) sramSlot = -1;
       }
-      const platform = detectPlatform(rom.subarray(romStart));
+      const platform = detectPlatform(romView);
 
       let internalTitle = '';
-      if (romStart + 0x143 <= rom.length) {
-        internalTitle = dec.decode(rom.slice(romStart + 0x134, romStart + 0x143))
+      if (romView.length > 0x143) {
+        internalTitle = dec.decode(romView.slice(0x134, 0x143))
           .replace(/[\x00-\x1F\x7F-\xFF]/g, '').trim();
       }
 
@@ -3835,7 +3952,8 @@ function isSramSlotNonEmpty(slotIdx) {
 function isSramRangeNonEmpty(slotIdx, count) {
   for (let i = 0; i < count; i++) {
     const off = sramDataChunkOffset(slotIdx, i, count);
-    const end = off + SRAM_SLOT_SIZE;
+    const chunkLen = sramChunkLength(slotIdx, i, count, count * SRAM_SLOT_SIZE, state.savData ? state.savData.length : SRAM_TOTAL_SIZE);
+    const end = off + chunkLen;
     if (!state.savData || end > state.savData.length) continue;
     for (let p = off; p < end; p++) {
       if (state.savData[p] !== 0x00 && state.savData[p] !== 0xFF) return true;
@@ -4054,7 +4172,8 @@ async function startExtract() {
       const pct = 10 + Math.floor(80 * i / total);
       progress(pct);
 
-      const romSlice = rom.slice(g.flashOff, g.flashOff + g.romSize);
+      let romSlice = rom.slice(g.flashOff, g.flashOff + g.romSize);
+      romSlice = restoreExtractedRomData(romSlice, g);
 
       const safeName    = sanitizeFilename(g.title || g.internalTitle || `game_${g.slotIdx}`);
       const ext         = (g.platform === 'CGB' || g.platform === 'CGB!') ? '.gbc'
@@ -4066,15 +4185,17 @@ async function startExtract() {
       let hasSave = false;
       if (g.hasSram && sav && g.sramSlot >= 0 && g.sramSlot < SRAM_NUM_SLOTS) {
         const reqSlots = requiredSramSlots(g.romSize, g.sramSize);
-        const savSlice = new Uint8Array(reqSlots * SRAM_SLOT_SIZE);
+        const totalBytes = Math.min(Math.max(g.sramSize || 0, 0), reqSlots * SRAM_SLOT_SIZE);
+        const savSlice = new Uint8Array(totalBytes);
         let complete = true;
         for (let si = 0; si < reqSlots; si++) {
           const slot = g.sramSlot + si;
           if (slot < 0 || slot >= SRAM_NUM_SLOTS) { complete = false; break; }
           const sramOff = sramDataChunkOffset(g.sramSlot, si, reqSlots);
-          const sramEnd = sramOff + SRAM_SLOT_SIZE;
+          const chunkLen = sramChunkLength(g.sramSlot, si, reqSlots, totalBytes, sav.length);
+          const sramEnd = sramOff + chunkLen;
           if (sramEnd > sav.length) { complete = false; break; }
-          savSlice.set(sav.slice(sramOff, sramEnd), si * SRAM_SLOT_SIZE);
+          if (chunkLen > 0) savSlice.set(sav.slice(sramOff, sramEnd), si * SRAM_SLOT_SIZE);
         }
         if (complete) {
           let empty = true;
