@@ -115,7 +115,8 @@ const SUPPORTED_MAPPERS = new Set(['ROM', 'MBC1', 'MBC2', 'MBC3', 'MBC5']);
 /* ROM CRC32 values known to be potentially unsupported ---------- */
 const UNSUPPORTED_CRC32 = new Set([
   '509A6B73', '005AD4B7', '06CC1E9D', 'AF2B426E', 'B2EEDD36', 'AD376905',
-  '562C8F7F', 'B1A8DFD0', '55300D0A', '7D1D8FDC', '6DBAA5E8'
+  '562C8F7F', 'B1A8DFD0', '55300D0A', '7D1D8FDC', '6DBAA5E8',
+  'D549E074', '19EB4516'
 ]);
 
 const ADVANCE_MODE_TITLE = 'CHINESE FIGHTER';
@@ -1115,440 +1116,234 @@ function natSortKey(fname) {
  */
 function computePlacements(entries) {
   let exactPackUsed = false;
+  const blockSpan = n => n > 2 ? n / 2 : 1;
 
-  function cloneEntries() {
-    return entries.map((g, i) => ({
-      ...g,
-      idx: g.idx ?? i,
-      _hasSram: false,
-      _reqSramSlots: 0,
-      _blockSpan: 0,
-      offset: undefined,
-      sramSlot: undefined,
-      warnReason: undefined,
-      skipReason: g.skipReason,
-    }));
-  }
-
-  function markOccupied(intervals, start, size) {
-    const end = start + size;
-    let insertAt = 0;
-    while (insertAt < intervals.length && intervals[insertAt].s < start) insertAt++;
-    intervals.splice(insertAt, 0, { s: start, e: end });
-  }
-
-  function regionFree(intervals, start, size) {
-    const end = start + size;
-    for (const region of intervals) {
-      if (region.e <= start) continue;
-      if (region.s >= end) break;
+  /* Sorted-interval helpers; occ = [{s,e},...] kept ascending by s. */
+  const insertOcc = (occ, s, size) => {
+    let i = 0;
+    while (i < occ.length && occ[i].s < s) i++;
+    occ.splice(i, 0, { s, e: s + size });
+  };
+  const isFree = (occ, s, size) => {
+    const e = s + size;
+    for (const r of occ) {
+      if (r.e <= s) continue;
+      if (r.s >= e) break;
       return false;
     }
     return true;
-  }
+  };
+  const cloneOcc = occ => occ.map(r => ({ ...r })).sort((a, b) => a.s - b.s);
 
-  function hasActiveSram(gameLike) {
-    return (gameLike.sramSize || 0) > 0 && !gameLike.forceNoSram;
-  }
-
-  function blockSpanForSlots(slotCount) {
-    return slotCount > 2 ? (slotCount / 2) : 1;
-  }
-
-  function alignedStartPositions(regionStart, regionEnd, size) {
+  const alignedStarts = (rs, re, size) => {
     const out = [];
-    let pos = Math.max(regionStart, MENU_SIZE);
-    const rem = pos % size;
-    if (rem) pos += size - rem;
-    while (pos + size <= regionEnd && pos + size <= FLASH_SIZE) {
-      out.push(pos);
-      pos += size;
-    }
+    const limit = Math.min(re, FLASH_SIZE);
+    let pos = Math.max(rs, MENU_SIZE);
+    if (pos % size) pos += size - (pos % size);
+    for (; pos + size <= limit; pos += size) out.push(pos);
     return out;
-  }
+  };
 
-  function groupRegionBounds(startSlot, slotCount) {
-    const endSlot = startSlot + slotCount - 1;
-    const startBlock = Math.floor(startSlot / 2);
-    const endBlock = Math.floor(endSlot / 2);
-    return {
-      startBlock,
-      endBlock,
-      start: startBlock * SRAM_BLOCK,
-      end: (endBlock + 1) * SRAM_BLOCK,
-    };
-  }
-
-  function buildRegionMask(startBank, bankCount) {
-    return ((1n << BigInt(bankCount)) - 1n) << BigInt(startBank);
-  }
-
-  function greedyPackRegionGames(games, regionStart, regionEnd, occupiedSeed = []) {
-    const occupied = occupiedSeed.map(region => ({ ...region })).sort((a, b) => a.s - b.s);
+  /* Greedy first-fit pack: largest games first, tie-break by idx. */
+  const greedyPack = (games, rs, re, seed) => {
+    const occ = cloneOcc(seed);
     const placements = new Map();
-    const ordered = [...games].sort((a, b) => b.size - a.size || a.idx - b.idx);
-    for (const game of ordered) {
-      let placed = false;
-      const candidates = alignedStartPositions(regionStart, regionEnd, game.size);
-      for (const pos of candidates) {
-        if (!regionFree(occupied, pos, game.size)) continue;
-        markOccupied(occupied, pos, game.size);
-        placements.set(game.idx, pos);
-        placed = true;
-        break;
-      }
-      if (!placed) return null;
+    for (const g of [...games].sort((a, b) => b.size - a.size || a.idx - b.idx)) {
+      const pos = alignedStarts(rs, re, g.size).find(p => isFree(occ, p, g.size));
+      if (pos === undefined) return null;
+      insertOcc(occ, pos, g.size);
+      placements.set(g.idx, pos);
     }
-    return { placements, occupied };
-  }
+    return { placements, occupied: occ };
+  };
 
-  function exactPackRegionGames(games, regionStart, regionEnd, occupiedSeed = []) {
-    const regionBankStart = Math.floor(regionStart / BANK_SIZE);
-    const items = [...games].map(game => {
-      const positions = alignedStartPositions(regionStart, regionEnd, game.size).map(pos => ({
-        pos,
-        bankStart: Math.floor(pos / BANK_SIZE) - regionBankStart,
-        bankCount: game.size / BANK_SIZE,
-      }));
-      return { game, positions };
-    }).sort((a, b) => a.positions.length - b.positions.length || b.game.size - a.game.size || a.game.idx - b.game.idx);
+  /* Exact DFS rescue (bank-bitmask + memoised dead-ends). */
+  const exactPack = (games, rs, re, seed) => {
+    const baseBank = (rs / BANK_SIZE) | 0;
+    const maskFor = (bs, bc) => ((1n << BigInt(bc)) - 1n) << BigInt(bs);
+    const items = games.map(g => ({
+      g,
+      cands: alignedStarts(rs, re, g.size).map(p => ({
+        pos: p,
+        mask: maskFor(((p / BANK_SIZE) | 0) - baseBank, (g.size / BANK_SIZE) | 0),
+      })),
+    })).sort((a, b) => a.cands.length - b.cands.length || b.g.size - a.g.size || a.g.idx - b.g.idx);
 
-    if (items.some(item => item.positions.length === 0)) return null;
+    if (items.some(it => it.cands.length === 0)) return null;
+    let width = 1;
+    for (const it of items) if ((width *= it.cands.length) > 50000) return null;
 
-    let searchWidth = 1;
-    for (const item of items) {
-      searchWidth *= item.positions.length;
-      if (searchWidth > 50000) return null;
-    }
+    let initMask = 0n;
+    for (const r of seed) initMask |= maskFor(((r.s / BANK_SIZE) | 0) - baseBank, ((r.e - r.s) / BANK_SIZE) | 0);
 
     const failed = new Set();
-    let initialMask = 0n;
-    for (const region of occupiedSeed) {
-      const bankStart = Math.floor(region.s / BANK_SIZE) - regionBankStart;
-      const bankCount = (region.e - region.s) / BANK_SIZE;
-      initialMask |= buildRegionMask(bankStart, bankCount);
-    }
-
-    function dfs(index, mask) {
-      if (index >= items.length) return new Map();
-      const key = `${index}:${mask.toString()}`;
+    const dfs = (i, mask) => {
+      if (i >= items.length) return new Map();
+      const key = `${i}:${mask}`;
       if (failed.has(key)) return null;
-
-      const item = items[index];
-      for (const candidate of item.positions) {
-        const candidateMask = buildRegionMask(candidate.bankStart, candidate.bankCount);
-        if ((mask & candidateMask) !== 0n) continue;
-        const rest = dfs(index + 1, mask | candidateMask);
-        if (rest) {
-          rest.set(item.game.idx, candidate.pos);
-          return rest;
-        }
+      for (const c of items[i].cands) {
+        if (mask & c.mask) continue;
+        const rest = dfs(i + 1, mask | c.mask);
+        if (rest) { rest.set(items[i].g.idx, c.pos); return rest; }
       }
-
       failed.add(key);
       return null;
-    }
+    };
+    return dfs(0, initMask);
+  };
 
-    return dfs(0, initialMask);
-  }
-
-  function packRegionGames(games, regionStart, regionEnd, occupiedSeed = []) {
-    const greedy = greedyPackRegionGames(games, regionStart, regionEnd, occupiedSeed);
+  const packRegion = (games, rs, re, seed) => {
+    const greedy = greedyPack(games, rs, re, seed);
     if (greedy) return greedy;
     if (games.length > 12) return null;
-    const exact = exactPackRegionGames(games, regionStart, regionEnd, occupiedSeed);
+    const exact = exactPack(games, rs, re, seed);
     if (!exact) return null;
     exactPackUsed = true;
-    const occupied = occupiedSeed.map(region => ({ ...region })).sort((a, b) => a.s - b.s);
-    for (const game of games) {
-      const offset = exact.get(game.idx);
-      if (offset === undefined) return null;
-      markOccupied(occupied, offset, game.size);
-    }
-    return { placements: exact, occupied };
-  }
+    const occ = cloneOcc(seed);
+    for (const g of games) insertOcc(occ, exact.get(g.idx), g.size);
+    return { placements: exact, occupied: occ };
+  };
 
-  function buildSramGroups(active) {
-    const groups = [];
-    const manualGroups = new Map();
-
-    for (const g of active) {
-      if (!g._hasSram) continue;
-      const reqSlots = g._reqSramSlots;
-      const forced = g.forceSramSlot;
-
-      if (forced !== undefined && forced !== null) {
-        const groupKey = sramShareKey(forced, reqSlots);
-        let group = manualGroups.get(groupKey);
-        if (!group) {
-          group = {
-            key: `manual:${groupKey}`,
-            games: [],
-            reqSlots,
-            blockSpan: blockSpanForSlots(reqSlots),
-            fixedStartSlot: forced,
-            auto: false,
-            minIdx: g.idx,
-            totalSize: 0,
-            oddStart: (forced % 2) === 1,
-          };
-          manualGroups.set(groupKey, group);
-          groups.push(group);
-        }
-        group.games.push(g);
-        group.totalSize += g.size;
-        group.minIdx = Math.min(group.minIdx, g.idx);
-        continue;
-      }
-
-      groups.push({
-        key: `auto:${g.idx}`,
-        games: [g],
-        reqSlots,
-        blockSpan: blockSpanForSlots(reqSlots),
-        fixedStartSlot: null,
-        auto: true,
-        minIdx: g.idx,
-        totalSize: g.size,
-        oddStart: false,
-      });
-    }
-
-    return { groups };
-  }
-
-  function candidateStartSlots(group, usedSlots) {
-    if (group.fixedStartSlot !== null && group.fixedStartSlot !== undefined) {
-      return [group.fixedStartSlot];
-    }
-
-    const needsAdvanceMode = group.auto && group.games.some(isAdvanceModeGameLike);
-
-    const starts = [];
-    const slotOrder = [];
-    if (group.reqSlots === 1) {
-      for (let s = 0; s < SRAM_NUM_SLOTS; s += 2) slotOrder.push(s);
-      if (group.games.every(canUseOddSingleSramSlot)) {
-        for (let s = 1; s < SRAM_NUM_SLOTS; s += 2) slotOrder.push(s);
-      }
-    } else {
-      for (let s = 0; s < SRAM_NUM_SLOTS; s += 2) slotOrder.push(s);
-    }
-
-    for (const slot of slotOrder) {
-      const endSlot = slot + group.reqSlots - 1;
-      if (endSlot >= SRAM_NUM_SLOTS) continue;
-      if (group.reqSlots > 1 && (slot % 2) !== 0) continue;
-      if (group.reqSlots === 1 && (slot % 2) === 1 && !group.games.every(g => canUseOddSingleSramSlot(g, slot))) continue;
-
-      const startBlock = Math.floor(slot / 2);
-      if (group.blockSpan > 1 && (startBlock % group.blockSpan) !== 0) continue;
-      if (needsAdvanceMode && !LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(startBlock)) continue;
-
-      let blocked = false;
-      for (let s = slot; s <= endSlot; s++) {
-        if (usedSlots[s]) { blocked = true; break; }
-      }
-      if (blocked) continue;
-      starts.push(slot);
-    }
-
-    return starts;
-  }
-
-  function placeNoSramGames(games, occupiedSeed, mode) {
-    const occupied = occupiedSeed.map(r => ({ ...r })).sort((a, b) => a.s - b.s);
-    const placements = new Map();
-    const skipped = new Set();
-
-    const ordered = [...games].sort((a, b) => {
-      if (mode === 'small-first') return a.size - b.size || a.idx - b.idx;
-      return b.size - a.size || a.idx - b.idx;
-    });
-
-    for (const game of ordered) {
-      const candidates = alignedStartPositions(MENU_SIZE, FLASH_SIZE, game.size);
-      let chosen = null;
-      let bestWaste = Infinity;
-      for (const pos of candidates) {
-        if (!regionFree(occupied, pos, game.size)) continue;
-        if (mode === 'tight-fit') {
-          let nextStart = FLASH_SIZE;
-          for (const region of occupied) {
-            if (region.s >= pos + game.size) { nextStart = region.s; break; }
-          }
-          const waste = nextStart - (pos + game.size);
-          if (waste < bestWaste) {
-            bestWaste = waste;
-            chosen = pos;
-          }
-          continue;
-        }
-        chosen = pos;
-        break;
-      }
-      if (chosen === null) {
-        skipped.add(game.idx);
-        continue;
-      }
-      markOccupied(occupied, chosen, game.size);
-      placements.set(game.idx, chosen);
-    }
-
-    return { placements, occupied, skipped };
-  }
-
-  function scorePlacement(result) {
-    let placed = 0;
-    let sramSkipped = 0;
-    let skipped = 0;
-    let oddAutoSingleSlot = 0;
-
-    for (const g of result) {
-      const isPlaced = g.offset !== undefined;
-      if (isPlaced) {
-        placed++;
-        if (g._hasSram && isAutoSramSelection(g) && g._reqSramSlots === 1 && g.sramSlot !== undefined && (g.sramSlot % 2) === 1) {
-          oddAutoSingleSlot++;
-        }
-      } else if (g.skipReason) {
-        skipped++;
-        if (g._hasSram && g.skipReason === 'exceeds max SRAM slots') sramSkipped++;
-      }
-    }
-
-    return { placed, sramSkipped, skipped, oddAutoSingleSlot };
-  }
-
-
-  function claimGroupSlots(usedSlots, group, startSlot) {
-    const endSlot = startSlot + group.reqSlots - 1;
-    for (let s = startSlot; s <= endSlot; s++) {
-      if (usedSlots[s] && usedSlots[s] !== group.key) return false;
-    }
-    for (let s = startSlot; s <= endSlot; s++) usedSlots[s] = group.key;
-    group.startSlot = startSlot;
-    return true;
-  }
-
-  function placeSramGroup(group, usedSlots, blockStates, placements, occupied) {
-    const candidateSlots = candidateStartSlots(group, usedSlots);
-    for (const startSlot of candidateSlots) {
-      const bounds = groupRegionBounds(startSlot, group.reqSlots);
-      const blockState = group.blockSpan === 1 && group.reqSlots === 1
-        ? blockStates.get(bounds.startBlock)
-        : null;
-      const occupiedSeed = blockState ? blockState.occupied : [];
-      const packed = packRegionGames(group.games, bounds.start, bounds.end, occupiedSeed);
-      if (!packed) continue;
-      if (!claimGroupSlots(usedSlots, group, startSlot)) continue;
-
-      if (blockState) blockState.occupied = packed.occupied;
-
-      for (const game of group.games) {
-        const offset = packed.placements.get(game.idx);
-        if (offset === undefined) return false;
-        placements.set(game.idx, { offset, sramSlot: startSlot });
-        markOccupied(occupied, offset, game.size);
-      }
-      return true;
-    }
-
-    return false;
-  }
-
-  const work = cloneEntries();
+  /* Pre-process: validate, classify, compute SRAM requirements. */
   const maxGames = GAMEDB_GAMES_PER_BANK * 4;
-  for (let i = 0; i < work.length; i++) {
-    const g = work[i];
-    g._hasSram = hasActiveSram(g);
-    g._reqSramSlots = g._hasSram ? requiredSramSlots(g.size, g.sramSize || 0, g) : 0;
-    g._blockSpan = blockSpanForSlots(g._reqSramSlots);
-    if (i >= maxGames && !g.skipReason) g.skipReason = 'exceeds max ROM count';
-    if (!g.skipReason) {
-      const skip = validateGame({ cartType: g.cartType, size: g.size });
-      if (skip) g.skipReason = skip;
+  const work = entries.map((g, i) => {
+    const w = { ...g, idx: g.idx ?? i, offset: undefined, sramSlot: undefined, warnReason: undefined };
+    w._hasSram = (w.sramSize || 0) > 0 && !w.forceNoSram;
+    w._reqSramSlots = w._hasSram ? requiredSramSlots(w.size, w.sramSize || 0, w) : 0;
+    if (i >= maxGames && !w.skipReason) w.skipReason = 'exceeds max ROM count';
+    if (!w.skipReason) w.skipReason = validateGame({ cartType: w.cartType, size: w.size }) || undefined;
+    if (!w.skipReason && w._hasSram && w.forceSramSlot != null) {
+      const f = w.forceSramSlot, n = f + 1;
+      if (f < 0 || f >= SRAM_NUM_SLOTS) w.skipReason = `invalid SRAM slot #${n}`;
+      else if (w._reqSramSlots > 1 && (f & 1)) w.skipReason = `SRAM slot #${n}: invalid start`;
+      else if (w._reqSramSlots === 1 && (f & 1) && !canUseOddSingleSramSlot(w, f)) w.skipReason = `SRAM slot #${n}: unsupported odd-slot mode`;
     }
-    if (!g.skipReason && g._hasSram && g.forceSramSlot !== undefined && g.forceSramSlot !== null) {
-      const slotNum = g.forceSramSlot + 1;
-      if (g.forceSramSlot < 0 || g.forceSramSlot >= SRAM_NUM_SLOTS) g.skipReason = `invalid SRAM slot #${slotNum}`;
-      else if (g._reqSramSlots > 1 && (g.forceSramSlot % 2) !== 0) g.skipReason = `SRAM slot #${slotNum}: invalid start`;
-      else if (g._reqSramSlots === 1 && (g.forceSramSlot % 2) === 1 && !canUseOddSingleSramSlot(g, g.forceSramSlot)) g.skipReason = `SRAM slot #${slotNum}: unsupported odd-slot mode`;
-    }
-    if (g.sramSize > SRAM_SLOT_SIZE * 2) g.warnReason = 'SRAM > 32 KiB (truncated)';
-  }
-
-  const active = work.filter(g => !g.skipReason);
-  const grouped = buildSramGroups(active);
-  const sramGroups = grouped.groups.sort((a, b) => {
-    const aManual = a.fixedStartSlot !== null && a.fixedStartSlot !== undefined;
-    const bManual = b.fixedStartSlot !== null && b.fixedStartSlot !== undefined;
-    if (aManual !== bManual) return aManual ? -1 : 1;
-    if (b.blockSpan !== a.blockSpan) return b.blockSpan - a.blockSpan;
-    if (b.reqSlots !== a.reqSlots) return b.reqSlots - a.reqSlots;
-    if (b.totalSize !== a.totalSize) return b.totalSize - a.totalSize;
-    return a.minIdx - b.minIdx;
+    if (w.sramSize > SRAM_SLOT_SIZE * 2) w.warnReason = 'SRAM > 32 KiB (truncated)';
+    return w;
   });
 
-  const usedSlots = new Array(SRAM_NUM_SLOTS).fill(null);
-  const blockStates = new Map();
-  for (let blockIdx = 0; blockIdx < FLASH_SIZE / SRAM_BLOCK; blockIdx++) {
-    blockStates.set(blockIdx, { occupied: [] });
+  /* Build SRAM groups. Manually-forced games sharing (slot, slotCount) merge. */
+  const manual = new Map();
+  const sramGroups = [];
+  for (const g of work) {
+    if (g.skipReason || !g._hasSram) continue;
+    const reqSlots = g._reqSramSlots;
+    if (g.forceSramSlot != null) {
+      const k = sramShareKey(g.forceSramSlot, reqSlots);
+      let grp = manual.get(k);
+      if (!grp) {
+        grp = { key: `manual:${k}`, games: [], reqSlots, blockSpan: blockSpan(reqSlots),
+                fixedStartSlot: g.forceSramSlot, auto: false, minIdx: g.idx, totalSize: 0 };
+        manual.set(k, grp);
+        sramGroups.push(grp);
+      }
+      grp.games.push(g);
+      grp.totalSize += g.size;
+      grp.minIdx = Math.min(grp.minIdx, g.idx);
+    } else {
+      sramGroups.push({ key: `auto:${g.idx}`, games: [g], reqSlots, blockSpan: blockSpan(reqSlots),
+                       fixedStartSlot: null, auto: true, minIdx: g.idx, totalSize: g.size });
+    }
   }
+  sramGroups.sort((a, b) => {
+    const am = a.fixedStartSlot != null, bm = b.fixedStartSlot != null;
+    if (am !== bm) return am ? -1 : 1;
+    return (b.blockSpan - a.blockSpan) || (b.reqSlots - a.reqSlots)
+        || (b.totalSize - a.totalSize) || (a.minIdx - b.minIdx);
+  });
+
+  /* Slot starts to try for one group. Even slots first, odd singles only if allowed. */
+  const candidateStarts = (group, used) => {
+    if (group.fixedStartSlot != null) return [group.fixedStartSlot];
+    const req = group.reqSlots;
+    const needsAdvance = group.auto && group.games.some(isAdvanceModeGameLike);
+    const allowOddSingles = req === 1 && group.games.every(canUseOddSingleSramSlot);
+    const order = [];
+    for (let s = 0; s < SRAM_NUM_SLOTS; s += 2) order.push(s);
+    if (allowOddSingles) for (let s = 1; s < SRAM_NUM_SLOTS; s += 2) order.push(s);
+
+    const out = [];
+    for (const s of order) {
+      const end = s + req - 1;
+      if (end >= SRAM_NUM_SLOTS) continue;
+      if (req > 1 && (s & 1)) continue;
+      if (req === 1 && (s & 1) && !group.games.every(g => canUseOddSingleSramSlot(g, s))) continue;
+      const startBlock = s >> 1;
+      if (group.blockSpan > 1 && startBlock % group.blockSpan) continue;
+      if (needsAdvance && !LAST_SRAM_BANK_MODE_ALLOWED_BLOCKS.has(startBlock)) continue;
+      let blocked = false;
+      for (let k = s; k <= end; k++) if (used[k]) { blocked = true; break; }
+      if (!blocked) out.push(s);
+    }
+    return out;
+  };
+
+  /* Place SRAM groups (consume slots + flash regions). */
+  const usedSlots = new Array(SRAM_NUM_SLOTS).fill(null);
+  const blockStates = Array.from({ length: FLASH_SIZE / SRAM_BLOCK }, () => ({ occupied: [] }));
   const occupied = [];
-  const placements = new Map();
 
   for (const group of sramGroups) {
-    const placed = placeSramGroup(group, usedSlots, blockStates, placements, occupied);
-    if (placed) continue;
+    let placed = false;
+    for (const s of candidateStarts(group, usedSlots)) {
+      const startBlock = s >> 1;
+      const endBlock = (s + group.reqSlots - 1) >> 1;
+      const sharable = group.blockSpan === 1 && group.reqSlots === 1 ? blockStates[startBlock] : null;
+      const packed = packRegion(group.games, startBlock * SRAM_BLOCK, (endBlock + 1) * SRAM_BLOCK,
+                                sharable ? sharable.occupied : []);
+      if (!packed) continue;
 
-    const reason = (group.fixedStartSlot !== null && group.fixedStartSlot !== undefined)
-      ? `SRAM slot #${group.fixedStartSlot + 1}: no free space`
-      : 'exceeds max SRAM slots';
-    for (const game of group.games) {
-      game.offset = undefined;
-      game.sramSlot = undefined;
-      game.skipReason = reason;
+      for (let k = s; k < s + group.reqSlots; k++) usedSlots[k] = group.key;
+      if (sharable) sharable.occupied = packed.occupied;
+      for (const g of group.games) {
+        g.offset = packed.placements.get(g.idx);
+        g.sramSlot = s;
+        insertOcc(occupied, g.offset, g.size);
+      }
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      const reason = group.fixedStartSlot != null
+        ? `SRAM slot #${group.fixedStartSlot + 1}: no free space`
+        : 'exceeds max SRAM slots';
+      for (const g of group.games) g.skipReason = reason;
     }
   }
 
-  const noSramGames = work.filter(g => !g.skipReason && !g._hasSram);
-  const noSramPacked = placeNoSramGames(noSramGames, occupied, 'small-first');
-  for (const [idx, offset] of noSramPacked.placements.entries()) {
-    placements.set(idx, { offset, sramSlot: undefined });
+  /* Fill remaining flash with non-SRAM games (small-first, first-fit). */
+  const noSram = work.filter(g => !g.skipReason && !g._hasSram)
+                     .sort((a, b) => a.size - b.size || a.idx - b.idx);
+  for (const g of noSram) {
+    const pos = alignedStarts(MENU_SIZE, FLASH_SIZE, g.size).find(p => isFree(occupied, p, g.size));
+    if (pos === undefined) { g.skipReason = "Can't fit in flash"; continue; }
+    g.offset = pos;
+    insertOcc(occupied, pos, g.size);
   }
 
-  for (const g of noSramGames) {
-    if (placements.has(g.idx)) continue;
-    g.offset = undefined;
-    g.sramSlot = undefined;
-    g.skipReason = 'Can\'t fit in flash';
-  }
-
-  for (const g of work) {
-    const placement = placements.get(g.idx);
-    if (!placement) continue;
-    g.offset = placement.offset;
-    g.sramSlot = placement.sramSlot;
-    g.skipReason = undefined;
-  }
-
+  /* Sync results back to caller's entries and score. */
+  let placed = 0, sramSkipped = 0, skipped = 0, oddAutoSingleSlot = 0;
   for (let i = 0; i < entries.length; i++) {
-    entries[i].offset = work[i].offset;
-    entries[i].sramSlot = work[i].sramSlot;
-    entries[i].skipReason = work[i].skipReason;
-    entries[i].warnReason = work[i].warnReason;
+    const w = work[i], e = entries[i];
+    e.offset = w.offset; e.sramSlot = w.sramSlot;
+    e.skipReason = w.skipReason; e.warnReason = w.warnReason;
+    if (w.offset !== undefined) {
+      placed++;
+      if (w._hasSram && isAutoSramSelection(w) && w._reqSramSlots === 1
+          && w.sramSlot != null && (w.sramSlot & 1)) oddAutoSingleSlot++;
+    } else if (w.skipReason) {
+      skipped++;
+      if (w._hasSram && w.skipReason === 'exceeds max SRAM slots') sramSkipped++;
+    }
   }
 
-  const score = scorePlacement(work);
   entries.placementMeta = {
     strategy: 'greedy-sram-first',
     rescueUsed: exactPackUsed,
-    score,
-    accepted: score.placed,
+    score: { placed, sramSkipped, skipped, oddAutoSingleSlot },
+    accepted: placed,
     searchExhausted: false,
   };
-
   return entries;
 }
 
