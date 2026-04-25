@@ -2704,7 +2704,7 @@ function updateFlashUsage(placements) {
       '<p><b>How games are placed in flash by this tool:</b></p>' +
       '<ul>' +
         '<li>Every ROM is rounded up to the next power-of-2 size (32 KiB, 64 KiB, 128 KiB, … up to 8 MiB) and must be aligned to that size in flash.</li>' +
-        '<li>Each 2 MiB flash block maps to either an SRAM block of 32 KiB. In flash blocks 1, 2, 3, 4, 9, 10, 11 and 12, the SRAM block can also be divided into two 8 KiB SRAM slots (up to 24 slots total).</li>' +
+        '<li>Each 2 MiB flash block maps to either an SRAM block of 32 KiB. Half of the available SRAM blocks can also be divided into two 8 KiB SRAM slots each (up to 24 slots total).</li>' +
         '<li>Some games will be patched to use the MBC5 mapper to resolve incompatibilities.</li>' +
         '<li>GBMem-Menu supports a maximum of <b>160 games</b> on a single 32 MiB cartridge.</li>' +
       '</ul>' +

@@ -599,6 +599,7 @@ header p {
   font-size: .72rem;
   color: var(--text2);
   text-align: left;
+  white-space: nowrap;
 }
 
 .game-table .sram-warn {
