@@ -613,6 +613,29 @@ header p {
   cursor: help;
 }
 
+.game-table .mapper-toggle {
+  margin-left: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: white;
+  font: inherit;
+  font-weight: bold;
+  line-height: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.game-table .mapper-toggle:hover {
+  text-decoration: underline;
+}
+
+.game-table .mapper-toggle.disabled {
+  color: var(--text3);
+  font-weight: inherit;
+  opacity: 80%;
+}
+
 .game-table .plat-badge {
   display: inline-block;
   font-size: .55rem;

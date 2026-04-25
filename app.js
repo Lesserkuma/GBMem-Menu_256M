@@ -931,6 +931,11 @@ function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
 /** Human-readable mapper name from the cartridge-type byte. */
 function mapperName(ct) { return MAPPER_NAMES[ct] || 'Unknown'; }
 
+/** Whether an available mapper patch is currently enabled for this game. */
+function isMapperPatchEnabled(game) {
+  return Boolean(game?.mapperPatch) && game?.mapperPatchEnabled !== false;
+}
+
 /** Mapper label for builder UI/logs; patched games show original mapper as MBCx→5. */
 function gameMapperLabel(game) {
   if (game?.mapperPatch) {
@@ -1367,7 +1372,8 @@ function packRoms(games) {
     skipReason: g.rom ? undefined : 'no ROM data',
     offset: undefined, sramSlot: undefined, warnReason: undefined,
     /* back-references for flash writing & regs */
-    rom: g.rom, title: g.title, index: g.index, mapperPatch: g.mapperPatch,
+    rom: g.rom, title: g.title, index: g.index,
+    mapperPatch: isMapperPatchEnabled(g) ? g.mapperPatch : null,
   }));
 
   computePlacements(entries);
@@ -1441,7 +1447,7 @@ function simulatePlacements() {
     cartTitle: g.rom.cartTitle || '',
     crc32: g.crc32,
     originalCartType: g.originalCartType,
-    mapperPatch: g.mapperPatch,
+    mapperPatch: isMapperPatchEnabled(g) ? g.mapperPatch : null,
     sramSize: g.rom.sramSize, forceNoSram: g.forceNoSram,
     forceSramSlot: g.forceSramSlot,
     offset: undefined, sramSlot: undefined,
@@ -1698,6 +1704,7 @@ function addGameRom(name, data) {
     crc32: fullCrc32,
     unsupportedCrc32: unsupportedCrc32,
     mapperPatch,
+    mapperPatchEnabled: Boolean(mapperPatch),
     savData:       state.savFiles[stem] || null,
     forceNoSram:   false,
     forceSramSlot: null,
@@ -2472,6 +2479,20 @@ function setSramSlot(idx, value) {
   updateGameTable();
 }
 
+function setMapperPatchEnabled(idx, enabled) {
+  const g = state.games[idx];
+  if (!g || !g.mapperPatch) return;
+  g.mapperPatchEnabled = Boolean(enabled);
+  g.rom.cartType = g.mapperPatchEnabled ? 0x19 : g.originalCartType;
+  updateGameTable();
+}
+
+function toggleMapperPatch(idx) {
+  const g = state.games[idx];
+  if (!g || !g.mapperPatch) return;
+  setMapperPatchEnabled(idx, !isMapperPatchEnabled(g));
+}
+
 
 /* --- Game Selection Table --- */
 
@@ -2530,6 +2551,13 @@ function updateGameTableBuilder() {
   state.games.forEach((g, i) => {
     const p             = placements[i] || {};
     const mapper        = gameMapperLabel(g);
+    const mapperPatchEnabled = isMapperPatchEnabled(g);
+    const mapperHtml = g.mapperPatch
+      ? `${esc(mapperName(g.originalCartType ?? g.rom.cartType))}`
+        + `<button type="button" class="mapper-toggle${mapperPatchEnabled ? '' : ' disabled'}"`
+        + ` title="${mapperPatchEnabled ? 'Click to disable mapper patch' : 'Click to enable mapper patch'}"`
+        + ` onclick="toggleMapperPatch(${i}); event.stopPropagation();">→5</button>`
+      : esc(mapper);
     const effectiveMapper = mapperName(g.rom.cartType);
     const hasSram       = g.rom.sramSize > 0;
 
@@ -2598,10 +2626,10 @@ function updateGameTableBuilder() {
 
     if (isPlaced) {
       placedIdx++;
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Offset" class="offset-cell">${formatRomSramOffset(p.offset, p.sramSlot)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">${placedIdx}</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapperHtml}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Offset" class="offset-cell">${formatRomSramOffset(p.offset, p.sramSlot)}</td><td data-label="Regs" class="reg-cell">${formatRegs(p.v7000, p.v7001, p.v7002)}</td></tr>`;
     } else {
       const reason = p.skip || 'no space';
-      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapper}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Status" class="offset-cell" colspan="2" style="color:var(--red)">\u26a0\ufe0f ${esc(reason)}</td></tr>`;
+      row = `<tr draggable="true" ondragstart="gameDragStart(event,${i})" ondragover="gameDragOver(event,${i})" ondrop="gameDrop(event,${i})" ondragleave="gameDragLeave(event)"><td data-label="#" class="reg-cell">\u2014</td>${moveBtns}<td data-label="File">${esc(g.name)}</td><td data-label="Title" class="title-cell" data-game-idx="${i}" onclick="editGameTitle(${i},this)">${esc(fitTitle(g.title))}</td><td data-label="SRAM">${sramHtml}${shareHint}</td><td data-label="Mapper">${platBadge} ${mapperHtml}${mapperWarn}${gameWarn}${advanceModeBlockWarn}</td><td data-label="Size" class="offset-cell">${formatRomSramSize(g.rom.size, g.rom.sramSize)}</td><td data-label="Status" class="offset-cell" colspan="2" style="color:var(--red)">\u26a0\ufe0f ${esc(reason)}</td></tr>`;
     }
 
     if (isPlaced) placed.push(row);
