@@ -1037,8 +1037,9 @@ function canUseOddSingleSramSlot(gameLike, slotIdx = null) {
 
 function requiredSramSlots(romSize, sramSize, gameLike) {
   let slots = sramSize > 0x2000 ? 2 : 1;
-  if (romSize > 0x400000) slots = Math.max(slots, 8);
-  else if (romSize > 0x200000) slots = Math.max(slots, 4);
+  if (romSize >= 0x800000) slots = Math.max(slots, 8);
+  else if (romSize >= 0x400000) slots = Math.max(slots, 4);
+  else if (romSize >= 0x200000) slots = Math.max(slots, 2);
   if (isPatchedMbc123ToMbc5(gameLike)) slots = Math.max(slots, 2);
   return slots;
 }
@@ -3018,7 +3019,7 @@ function _syncBgSelect(selId, slotObj) {
   const sel = document.getElementById(selId);
   if (!sel) return;
   const curIdx = slotObj ? slotObj._srcIdx : '';
-  let html = '<option value=""' + (curIdx === '' || curIdx === undefined ? ' selected' : '') + '>Default</option>';
+  let html = '<option value=""' + (curIdx === '' || curIdx === undefined ? ' selected' : '') + '>Default Image</option>';
   state.bgImages.forEach((img, i) => {
     html += `<option value="${i}"${i === curIdx ? ' selected' : ''}>${esc(img.name)}</option>`;
   });
